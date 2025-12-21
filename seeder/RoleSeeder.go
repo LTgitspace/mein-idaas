@@ -1,6 +1,7 @@
 package seeder
 
 import (
+	"errors"
 	"log"
 	"mein-idaas/model"
 
@@ -33,9 +34,23 @@ func SeedRoles(db *gorm.DB) {
 	log.Println("Seeding roles...")
 
 	for _, role := range roles {
-		// We use 'Code' as the unique identifier to check existence
-		if err := db.Where(model.Role{Code: role.Code}).FirstOrCreate(&role).Error; err != nil {
-			log.Printf("Error seeding role %s: %v", role.Code, err)
+		// 1. Check if it exists by Code
+		var existing model.Role
+		err := db.Where("code = ?", role.Code).First(&existing).Error
+
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// 2. Not found -> Create it
+			if err := db.Create(&role).Error; err != nil {
+				log.Printf("Error creating role %s: %v", role.Code, err)
+			} else {
+				log.Printf("Created new role: %s", role.Code)
+			}
+		} else if err != nil {
+			// 3. Database error (connection issue, etc.)
+			log.Printf("Error checking role %s: %v", role.Code, err)
+		} else {
+			// 4. Found -> Do nothing
+			// log.Printf("Role %s already exists. Skipping.", role.Code)
 		}
 	}
 

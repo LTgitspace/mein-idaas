@@ -8,11 +8,12 @@ import (
 )
 
 type Role struct {
-	ID          uuid.UUID `gorm:"type:uuid;primaryKey,uniqueIndex"`
-	Name        string    `gorm:"size:50;not null,uniqueIndex"` // UI Display (e.g., "Super Administrator")
-	Code        string    `gorm:"size:50;not null;uniqueIndex"` // The value sent in JWT (e.g., "super_admin")
+	ID   uuid.UUID `gorm:"type:uuid;primaryKey;uniqueIndex"`
+	Name string    `gorm:"size:50;not null;uniqueIndex"`
+
+	Code        string    `gorm:"size:50;not null;uniqueIndex"`
 	Description string    `gorm:"size:255"`
-	IsSystem    bool      `gorm:"default:false"` // Protects critical roles from deletion
+	IsSystem    bool      `gorm:"default:false"`
 	CreatedAt   time.Time `gorm:"autoCreateTime"`
 	UpdatedAt   time.Time `gorm:"autoUpdateTime"`
 }

@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// ParseAccessToken now returns the full Claims object, not just ID
+// ParseAccessToken now returns the full Claims object
 func ParseAccessToken(tokenString string) (*dto.AuthClaims, error) {
 	claims := &dto.AuthClaims{}
 
@@ -43,8 +43,9 @@ func ParseRefreshToken(tokenString string) (uuid.UUID, uuid.UUID, error) {
 		return uuid.Nil, uuid.Nil, errors.New("invalid or expired refresh token")
 	}
 
-	if claims.UserID == "" {
-		return uuid.Nil, uuid.Nil, errors.New("missing user_id in refresh token")
+	// CHANGED: Use standard 'Subject' instead of custom 'UserID'
+	if claims.Subject == "" {
+		return uuid.Nil, uuid.Nil, errors.New("missing subject (user_id) in refresh token")
 	}
 
 	if claims.ID == "" {
@@ -52,7 +53,7 @@ func ParseRefreshToken(tokenString string) (uuid.UUID, uuid.UUID, error) {
 	}
 
 	// Parse userID from string to UUID
-	userID, err := uuid.Parse(claims.UserID)
+	userID, err := uuid.Parse(claims.Subject)
 	if err != nil {
 		return uuid.Nil, uuid.Nil, errors.New("invalid user_id format in token")
 	}
