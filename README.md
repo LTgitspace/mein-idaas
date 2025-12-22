@@ -489,7 +489,298 @@ CREATE TABLE user_roles (
 ---
 
 ## Troubleshooting
+## Database Schema
 
+### Users Table
+```sql
+CREATE TABLE users (
+  id UUID PRIMARY KEY,
+  name VARCHAR(50) NOT NULL,
+  email VARCHAR(255) NOT NULL UNIQUE,
+  is_email_verified BOOLEAN DEFAULT false,
+  created_at TIMESTAMP,
+  updated_at TIMESTAMP
+);
+```
+
+### Credentials Table
+```sql
+CREATE TABLE credentials (
+  id UUID PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type VARCHAR(50) NOT NULL,  -- 'password', 'totp', etc.
+  value TEXT NOT NULL,
+  created_at TIMESTAMP,
+  updated_at TIMESTAMP
+);
+```
+
+### Refresh Tokens Table
+```sql
+CREATE TABLE refresh_tokens (
+  id UUID PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash VARCHAR(255) NOT NULL UNIQUE,
+  expires_at TIMESTAMP NOT NULL,
+  replaced_at TIMESTAMP,        -- NULL if not yet rotated (GRACE PERIOD field)
+  replaced_by_token_id UUID,    -- Points to child token (GRACE PERIOD field)
+  revoked_at TIMESTAMP,         -- NULL if not revoked (MANUAL LOGOUT)
+  client_ip VARCHAR(45),
+  user_agent TEXT,
+  created_at TIMESTAMP
+);
+```
+
+Fields explained:
+- **token_hash** - Hash of the actual refresh token (stored securely like passwords)
+- **expires_at** - Token lifetime (7 days from creation)
+- **replaced_at** - Timestamp when this token was rotated (marks grace period start)
+- **replaced_by_token_id** - UUID of the new token that replaced this one (for grace period retry)
+- **revoked_at** - Manual revocation timestamp (used for logout)
+- **client_ip** - Client IP for audit trail
+- **user_agent** - Browser/app info for audit trail
+
+### Roles Table
+```sql
+CREATE TABLE roles (
+  id UUID PRIMARY KEY,
+  code VARCHAR(50) UNIQUE NOT NULL,  -- 'admin', 'user'
+  description TEXT,
+  created_at TIMESTAMP,
+  updated_at TIMESTAMP
+);
+```
+
+### User Roles Junction Table
+```sql
+CREATE TABLE user_roles (
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  role_id UUID REFERENCES roles(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, role_id)
+);
+```
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+- Go 1.25+
+- PostgreSQL 16+
+- Git
+
+### Installation
+
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/mein-idaas.git
+cd mein-idaas
+```
+
+2. Install dependencies:
+```bash
+go mod download
+```
+
+3. Set up environment variables:
+
+Create a `.env` file in the project root:
+
+```env
+# Database
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=your_password
+DB_NAME=idaas_db
+
+# JWT
+JWT_SECRET=your_super_secret_key_min_32_chars_long
+JWT_EXPIRY_MINUTES=15
+REFRESH_TOKEN_EXPIRY_DAYS=7
+
+# Server
+SERVER_PORT=4000
+```
+
+4. Initialize the database:
+
+```bash
+# Connect to PostgreSQL
+psql -U postgres
+
+# Create database
+CREATE DATABASE idaas_db;
+
+# Exit psql
+\q
+```
+
+5. Run the application:
+
+```bash
+go run main.go
+```
+
+The server will:
+- Connect to PostgreSQL
+- Auto-migrate database schema
+- Seed default roles (admin, user)
+- Start on `http://localhost:4000`
+
+---
+
+## API Documentation
+
+### Swagger UI
+
+Access interactive API docs at:
+```
+http://localhost:4000/swagger/index.html
+```
+
+### Response Format
+
+All API responses follow a consistent format:
+
+**Success Response:**
+```json
+{
+  "access_token": "eyJhbGc...",
+  "refresh_token": "a1b2c3d4...",
+  "expires_in": 900
+}
+```
+
+**Error Response:**
+```json
+{
+  "error": "invalid credentials"
+}
+```
+
+---
+
+## Security Features
+
+### Password Security
+- Bcrypt hashing with salt rounds
+- Passwords never stored in plain text
+- Constant-time comparison prevents timing attacks
+
+### JWT Security
+- HS256 algorithm for token signing
+- `user_id` and `roles` embedded in token for quick identification
+- Separate access and refresh token lifecycles
+- Short-lived access tokens (15 minutes)
+- Long-lived refresh tokens (7 days)
+
+### Token Rotation & Grace Period
+- Old refresh tokens automatically marked as replaced on rotation
+- Graceful window (10 seconds) for network retry safety
+- Theft detection after grace period expires
+- Account lockdown on suspicious reuse
+- Prevents token replay attacks
+
+### Database Security
+- Refresh tokens stored hashed, not plain text
+- Unique user email constraint
+- Foreign key constraints with cascade deletion
+- Token audit trail (IP, User-Agent, timestamps)
+
+---
+
+## Troubleshooting
+
+### "invalid or unknown refresh token"
+- Cause: Token doesn't exist in database
+- Solution: Ensure tokens are persisted after login
+
+### "refresh token reuse detected: account locked"
+- Cause: Token was reused after 10-second grace period ended
+- Solution: Security mechanism working as intended. User must re-login.
+
+### "refresh token expired or revoked"
+- Cause: Token exceeded 7-day lifetime or was manually revoked
+- Solution: User needs to login again with credentials
+
+### Swagger not loading
+- Cause: Swagger docs not generated
+- Solution: Run `swag init` in project root
+
+### Database connection errors
+- Cause: PostgreSQL not running or credentials incorrect
+- Solution: Verify `.env` file has correct DB connection string
+
+---
+
+## Dependencies
+
+| Package | Purpose |
+|---------|---------|
+| `gofiber/fiber` | Ultra-fast HTTP framework |
+| `golang-jwt/jwt` | JWT signing & verification |
+| `gorm.io/gorm` | ORM for database operations |
+| `gorm.io/driver/postgres` | PostgreSQL driver |
+| `golang.org/x/crypto` | Password hashing (bcrypt) |
+| `google/uuid` | UUID generation |
+| `gofiber/swagger` | Swagger UI integration |
+| `swaggo/swag` | Swagger documentation generation |
+
+---
+
+## HTTP Status Codes
+
+| Code | Scenario |
+|------|----------|
+| 201 | User registered successfully |
+| 200 | Login or refresh token successful |
+| 400 | Invalid request payload or validation error |
+| 401 | Invalid credentials, expired token, or account locked |
+| 500 | Server error |
+
+---
+
+## Future Enhancements
+
+- Email verification flow
+- Multi-factor authentication (MFA)
+- OAuth2/OIDC provider mode
+- Permission-based authorization (beyond roles)
+- Audit logging & compliance
+- Session management & device tracking
+- Rate limiting per user/IP
+- HTTPS/TLS enforcement
+- Token introspection endpoint
+- Token revocation list
+
+---
+
+## License
+
+MIT License - See LICENSE file for details
+
+---
+
+## Contributing
+
+Contributions are welcome! Please:
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Submit a pull request
+
+---
+
+## Support
+
+For issues, questions, or suggestions, please open an issue on GitHub.
+
+---
+
+Built with simplicity and control in mind for developers who want to own their authentication infrastructure.
 ### "invalid or unknown refresh token"
 - **Cause:** Token doesn't exist in database or was never stored
 - **Solution:** Ensure refresh tokens are being persisted in the database after login
