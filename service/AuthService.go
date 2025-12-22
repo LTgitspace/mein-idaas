@@ -128,30 +128,156 @@ func (s *AuthService) Login(req *dto.LoginRequest, clientIP, userAgent string) (
 }
 
 // Refresh rotates refresh tokens and issues a new access token
+//func (s *AuthService) Refresh(req *dto.RefreshRequest, clientIP, userAgent string) (*dto.RefreshResponse, error) {
+//	userIDFromToken, refreshID, err := util.ParseRefreshToken(req.RefreshToken)
+//	if err != nil {
+//		return nil, errors.New("invalid refresh token")
+//	}
+//
+//	existing, err := s.refreshRepo.GetByID(refreshID)
+//	if err != nil {
+//		return nil, errors.New("invalid or unknown refresh token")
+//	}
+//
+//	if existing.UserID != userIDFromToken {
+//		return nil, errors.New("refresh token user mismatch")
+//	}
+//
+//	if existing.TokenHash != util.HashToken(req.RefreshToken) {
+//		return nil, errors.New("refresh token mismatch")
+//	}
+//
+//	if !existing.IsValid() {
+//		return nil, errors.New("refresh token expired or revoked")
+//	}
+//
+//	// Fetch User to get LATEST roles
+//	user, err := s.userRepo.GetByID(existing.UserID)
+//	if err != nil {
+//		return nil, errors.New("user not found")
+//	}
+//
+//	var roleCodes []string
+//	for _, r := range user.Roles {
+//		roleCodes = append(roleCodes, r.Code)
+//	}
+//
+//	// Generate new tokens
+//	pair, err := util.GenerateTokens(existing.UserID, roleCodes)
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	if err := s.refreshRepo.RevokeByID(existing.ID); err != nil {
+//		// log error
+//	}
+//
+//	newHash := util.HashToken(pair.RefreshToken)
+//	newRT := &model.RefreshToken{
+//		ID:        pair.RefreshID,
+//		UserID:    existing.UserID,
+//		TokenHash: newHash,
+//		ExpiresAt: time.Now().Add(7 * 24 * time.Hour),
+//		ClientIP:  clientIP,
+//		UserAgent: userAgent,
+//	}
+//	if err := s.refreshRepo.Create(newRT); err != nil {
+//		return nil, err
+//	}
+//
+//	return &dto.RefreshResponse{AccessToken: pair.AccessToken, RefreshToken: pair.RefreshToken, ExpiresIn: 15 * 60}, nil
+//}
+
 func (s *AuthService) Refresh(req *dto.RefreshRequest, clientIP, userAgent string) (*dto.RefreshResponse, error) {
+	// 1. Parse & Validate basic structure
 	userIDFromToken, refreshID, err := util.ParseRefreshToken(req.RefreshToken)
 	if err != nil {
 		return nil, errors.New("invalid refresh token")
 	}
 
+	// 2. Load Token from DB
 	existing, err := s.refreshRepo.GetByID(refreshID)
 	if err != nil {
 		return nil, errors.New("invalid or unknown refresh token")
 	}
 
+	// 3. Security Checks
 	if existing.UserID != userIDFromToken {
-		return nil, errors.New("refresh token user mismatch")
+		return nil, errors.New("user mismatch")
+	}
+	if existing.RevokedAt != nil {
+		return nil, errors.New("token was revoked")
+	} // Manual logout
+
+	// ---------------------------------------------------------
+	// 4. GRACE PERIOD & REUSE DETECTION LOGIC
+	// ---------------------------------------------------------
+
+	if existing.ReplacedAt != nil {
+		duration := time.Since(*existing.ReplacedAt)
+
+		// CASE A: Theft Detected (Replay attack after 10s)
+		if duration > 10*time.Second {
+			// "Nuclear Option": Revoke ALL tokens for this user because their family is compromised
+			// You need to add this method to your Repo
+			// s.refreshRepo.RevokeAllForUser(existing.UserID)
+			return nil, errors.New("refresh token reuse detected: account locked for security")
+		}
+
+		// CASE B: Grace Period
+		if existing.ReplacedByTokenID == nil {
+			return nil, errors.New("system inconsistency: replaced timestamp set but no replacement ID")
+		}
+
+		childToken, err := s.refreshRepo.GetByID(*existing.ReplacedByTokenID)
+		if err != nil {
+			return nil, errors.New("child token not found")
+		}
+
+		// 1. FIX: Check Error (Don't ignore it with _)
+		user, err := s.userRepo.GetByID(existing.UserID)
+		if err != nil {
+			return nil, errors.New("failed to fetch user")
+		}
+
+		var roleCodes []string
+		for _, r := range user.Roles {
+			roleCodes = append(roleCodes, r.Code)
+		}
+
+		// 2. FIX: Check Error (Don't ignore it with _)
+		pair, err := util.GenerateTokens(existing.UserID, roleCodes)
+		if err != nil {
+			return nil, err // Return the actual error instead of crashing
+		}
+
+		rtString, err := util.SignRefreshToken(childToken.ID, childToken.UserID)
+		if err != nil {
+			return nil, err
+		}
+
+		now := time.Now()
+		existing.ReplacedAt = &now
+		existing.ReplacedByTokenID = &pair.RefreshID
+
+		// 🔴 CRITICAL FIX: Check this error!
+		// If this fails, the token remains "fresh" and can be reused forever.
+		if err := s.refreshRepo.Update(existing); err != nil {
+			return nil, errors.New("critical: failed to mark token as used")
+		}
+
+		return &dto.RefreshResponse{
+			AccessToken:  pair.AccessToken,
+			RefreshToken: rtString,
+			ExpiresIn:    900,
+		}, nil
 	}
 
-	if existing.TokenHash != util.HashToken(req.RefreshToken) {
-		return nil, errors.New("refresh token mismatch")
-	}
+	// ---------------------------------------------------------
+	// 5. NORMAL ROTATION (First time using this token)
+	// ---------------------------------------------------------
 
-	if !existing.IsValid() {
-		return nil, errors.New("refresh token expired or revoked")
-	}
-
-	// Fetch User to get LATEST roles
+	// Fetch User Roles
 	user, err := s.userRepo.GetByID(existing.UserID)
 	if err != nil {
 		return nil, errors.New("user not found")
@@ -162,16 +288,13 @@ func (s *AuthService) Refresh(req *dto.RefreshRequest, clientIP, userAgent strin
 		roleCodes = append(roleCodes, r.Code)
 	}
 
-	// Generate new tokens
+	// Generate NEW Pair
 	pair, err := util.GenerateTokens(existing.UserID, roleCodes)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := s.refreshRepo.RevokeByID(existing.ID); err != nil {
-		// log error
-	}
-
+	// Save the NEW Token
 	newHash := util.HashToken(pair.RefreshToken)
 	newRT := &model.RefreshToken{
 		ID:        pair.RefreshID,
@@ -185,5 +308,11 @@ func (s *AuthService) Refresh(req *dto.RefreshRequest, clientIP, userAgent strin
 		return nil, err
 	}
 
-	return &dto.RefreshResponse{AccessToken: pair.AccessToken, RefreshToken: pair.RefreshToken, ExpiresIn: 15 * 60}, nil
+	// Mark OLD Token as Replaced (Link it to the new one)
+	now := time.Now()
+	existing.ReplacedAt = &now
+	existing.ReplacedByTokenID = &pair.RefreshID
+	s.refreshRepo.Update(existing) // Save changes
+
+	return &dto.RefreshResponse{AccessToken: pair.AccessToken, RefreshToken: pair.RefreshToken, ExpiresIn: 900}, nil
 }

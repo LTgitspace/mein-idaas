@@ -70,6 +70,27 @@ func GenerateTokens(userID uuid.UUID, roles []string) (*TokenPair, error) {
 	}, nil
 }
 
+// SignRefreshToken creates a JWT string for an EXISTING refresh token ID
+// This is used during the "Grace Period" to return a token that already exists in DB
+func SignRefreshToken(refreshID uuid.UUID, userID uuid.UUID) (string, error) {
+	now := time.Now()
+
+	claims := dto.AuthClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject: userID.String(),
+			// We set the standard expiry again.
+			// (In a strict system, you might want to pass the original db expiration here)
+			ExpiresAt: jwt.NewNumericDate(now.Add(7 * 24 * time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(now),
+			Issuer:    "my-idaas",
+			ID:        refreshID.String(), // Important: Use the EXISTING ID
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(refreshSecret)
+}
+
 //func getEnv(key, fallback string) string {
 //	if value, exists := os.LookupEnv(key); exists {
 //		return value

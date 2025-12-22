@@ -86,8 +86,9 @@ func (ac *AuthController) Login(c *fiber.Ctx) error {
 
 	// Return only Access Token to client memory
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
-		"access_token": res.AccessToken,
-		"expires_in":   res.ExpiresIn,
+		"access_token":  res.AccessToken,
+		"refresh_token": res.RefreshToken, //remove after production
+		"expires_in":    res.ExpiresIn,
 	})
 }
 

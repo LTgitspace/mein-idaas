@@ -34,6 +34,8 @@ type RefreshTokenRepository interface {
 	GetByTokenHash(hash string) (*model.RefreshToken, error)
 	RevokeByHash(hash string) error
 	RevokeByID(id uuid.UUID) error
+	RevokeAllForUser(userID uuid.UUID) error // <--- NEW METHOD
+	Update(rt *model.RefreshToken) error
 	DeleteExpired() error
 }
 
@@ -59,9 +61,8 @@ func (r *pgUserRepo) Create(user *model.User) error {
 
 func (r *pgUserRepo) GetByID(id uuid.UUID) (*model.User, error) {
 	var u model.User
-	// FIXED: Added .Preload("Roles")
-	// This is required for the RefreshToken flow to bake roles into the new JWT
-	if err := r.db.Preload("Roles").Preload("Credentials").Preload("RefreshTokens").First(&u, "id = ?", id).Error; err != nil {
+	// REMOVED .Preload("RefreshTokens") - This is the fix
+	if err := r.db.Preload("Roles").Preload("Credentials").First(&u, "id = ?", id).Error; err != nil {
 		return nil, err
 	}
 	return &u, nil
@@ -165,6 +166,16 @@ func (r *pgRefreshTokenRepo) RevokeByID(id uuid.UUID) error {
 
 func (r *pgRefreshTokenRepo) DeleteExpired() error {
 	return r.db.Where("expires_at < ?", time.Now()).Delete(&model.RefreshToken{}).Error
+}
+
+func (r *pgRefreshTokenRepo) Update(rt *model.RefreshToken) error {
+	return r.db.Save(rt).Error
+}
+
+func (r *pgRefreshTokenRepo) RevokeAllForUser(userID uuid.UUID) error {
+	return r.db.Model(&model.RefreshToken{}).
+		Where("user_id = ?", userID).
+		Update("revoked_at", time.Now()).Error
 }
 
 // ----------------- Role repo -----------------
