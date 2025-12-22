@@ -34,42 +34,63 @@ func NewAuthService(
 
 // Register creates a new user, assigns default role, and creates credentials
 func (s *AuthService) Register(req *dto.RegisterRequest) (*dto.RegisterResponse, error) {
-	// 1. Prepare User Object
+	// 1. Start a Transaction (All or Nothing)
+	tx := s.userRepo.GetDB().Begin()
+
+	// Safety: Rollback if panic occurs or if we forget to commit
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// 2. Prepare User
 	user := &model.User{
 		Name:  req.Name,
 		Email: req.Email,
 	}
 
-	// 2. Fetch Default Role (e.g., "user")
-	// This ensures every new registration gets the basic permissions
+	// 3. Attach Role
 	defaultRole, err := s.roleRepo.GetByCode("user")
 	if err != nil {
-		// If "user" role is missing, registration should probably fail
-		// so you don't have users with 0 permissions.
+		tx.Rollback()
 		return nil, errors.New("system error: default role not found")
 	}
-
-	// Attach the role. GORM will handle the join table insertion when we Create(user).
 	user.Roles = append(user.Roles, *defaultRole)
 
-	// 3. Persist User (and the relationship to the Role)
-	if err := s.userRepo.Create(user); err != nil {
+	// 🛡️ CRITICAL SAFETY: Force Credentials to nil to prevent "Double Save"
+	user.Credentials = nil
+
+	// 4. Create User (USING 'tx', not 's.userRepo')
+	if err := tx.Create(user).Error; err != nil {
+		tx.Rollback()
+		if util.IsDuplicateKeyError(err) {
+			return nil, errors.New("email already in use")
+		}
 		return nil, err
 	}
 
-	// 4. Hash Password
+	// 5. Hash Password
 	hashed, err := util.HashPassword(req.Password)
 	if err != nil {
+		tx.Rollback()
 		return nil, err
 	}
 
-	// 5. Create Password Credential
+	// 6. Create Credential (USING 'tx')
 	cred := &model.Credential{
 		UserID: user.ID,
-		Type:   "password",
+		Type:   model.CredTypePassword, // Make sure this matches your Enum
 		Value:  hashed,
 	}
-	if err := s.credentialRepo.Create(cred); err != nil {
+	if err := tx.Debug().Create(cred).Error; err != nil {
+		tx.Rollback()
+		// This will print the exact SQL error to your API response
+		return nil, errors.New("SQL ERROR: " + err.Error())
+	}
+
+	// 7. Commit (Save everything permanently)
+	if err := tx.Commit().Error; err != nil {
 		return nil, err
 	}
 
@@ -85,7 +106,7 @@ func (s *AuthService) Login(req *dto.LoginRequest, clientIP, userAgent string) (
 
 	var pwCred *model.Credential
 	for _, c := range user.Credentials {
-		if c.Type == "password" {
+		if c.Type == model.CredTypePassword {
 			pwCred = &c
 			break
 		}
@@ -224,51 +245,46 @@ func (s *AuthService) Refresh(req *dto.RefreshRequest, clientIP, userAgent strin
 			return nil, errors.New("refresh token reuse detected: account locked for security")
 		}
 
-		// CASE B: Grace Period
+		// CASE B: Grace Period (Concurrency retry)
 		if existing.ReplacedByTokenID == nil {
 			return nil, errors.New("system inconsistency: replaced timestamp set but no replacement ID")
 		}
 
+		// 1. Find the token that ALREADY replaced this one
 		childToken, err := s.refreshRepo.GetByID(*existing.ReplacedByTokenID)
 		if err != nil {
 			return nil, errors.New("child token not found")
 		}
 
-		// 1. FIX: Check Error (Don't ignore it with _)
+		// 2. Fetch User for Roles
 		user, err := s.userRepo.GetByID(existing.UserID)
 		if err != nil {
 			return nil, errors.New("failed to fetch user")
 		}
-
 		var roleCodes []string
 		for _, r := range user.Roles {
 			roleCodes = append(roleCodes, r.Code)
 		}
 
-		// 2. FIX: Check Error (Don't ignore it with _)
-		pair, err := util.GenerateTokens(existing.UserID, roleCodes)
-		if err != nil {
-			return nil, err // Return the actual error instead of crashing
-		}
-
-		rtString, err := util.SignRefreshToken(childToken.ID, childToken.UserID)
+		// 3. Generate ONLY a new Access Token (Use a helper or ignore the returned RT)
+		// We DO NOT want a new Refresh ID. We want to keep the chain A -> B.
+		newAccessToken, err := util.GenerateAccessTokenOnly(user.ID, roleCodes)
 		if err != nil {
 			return nil, err
 		}
 
-		now := time.Now()
-		existing.ReplacedAt = &now
-		existing.ReplacedByTokenID = &pair.RefreshID
-
-		// 🔴 CRITICAL FIX: Check this error!
-		// If this fails, the token remains "fresh" and can be reused forever.
-		if err := s.refreshRepo.Update(existing); err != nil {
-			return nil, errors.New("critical: failed to mark token as used")
+		// 4. Re-sign the EXISTING child token ID so the client gets a valid JWT string
+		// This ensures the client gets the same Refresh Token ID that is already in the DB
+		refreshTokenString, err := util.SignRefreshToken(childToken.ID, childToken.UserID)
+		if err != nil {
+			return nil, err
 		}
 
+		// 5. RETURN IMMEDIATELY. DO NOT UPDATE DB.
+		// The DB is already correct (A -> ReplacedBy -> B). We just resend the info.
 		return &dto.RefreshResponse{
-			AccessToken:  pair.AccessToken,
-			RefreshToken: rtString,
+			AccessToken:  newAccessToken,
+			RefreshToken: refreshTokenString,
 			ExpiresIn:    900,
 		}, nil
 	}
@@ -312,7 +328,12 @@ func (s *AuthService) Refresh(req *dto.RefreshRequest, clientIP, userAgent strin
 	now := time.Now()
 	existing.ReplacedAt = &now
 	existing.ReplacedByTokenID = &pair.RefreshID
-	s.refreshRepo.Update(existing) // Save changes
+	if err := s.refreshRepo.Update(existing); err != nil {
+		// If we fail to mark the old one as replaced, we have a security issue.
+		// Ideally, delete the 'newRT' we just created to prevent orphans.
+		s.refreshRepo.Delete(newRT.ID)
+		return nil, errors.New("failed to rotate token")
+	}
 
 	return &dto.RefreshResponse{AccessToken: pair.AccessToken, RefreshToken: pair.RefreshToken, ExpiresIn: 900}, nil
 }

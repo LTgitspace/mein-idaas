@@ -11,43 +11,40 @@ import (
 type TokenPair struct {
 	AccessToken  string
 	RefreshToken string
-	RefreshID    uuid.UUID // We return this so you can save it to DB
+	RefreshID    uuid.UUID
 }
 
-// Load keys once at startup to prevent reading env on every request
+// Load keys once at startup
 var (
 	accessSecret  = []byte(getEnv("JWT_ACCESS_SECRET", "fallback-dev-secret"))
 	refreshSecret = []byte(getEnv("JWT_REFRESH_SECRET", "fallback-dev-secret"))
 )
 
-// GenerateTokens now accepts ROLES to bake them into the token
+// GenerateTokens creates both Access and Refresh tokens
 func GenerateTokens(userID uuid.UUID, roles []string) (*TokenPair, error) {
 	now := time.Now()
 
 	// 1. Create Access Token
 	accessClaims := dto.AuthClaims{
-		Roles: roles, // <--- INJECT ROLES HERE
+		Roles: roles,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID.String(),
 			ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
 			IssuedAt:  jwt.NewNumericDate(now),
 			Issuer:    "my-idaas",
-			// Audience is important for IDaaS (who is this token for?)
-			Audience: jwt.ClaimStrings{"my-game-server", "smoking-app"},
+			Audience:  jwt.ClaimStrings{"my-game-server", "smoking-app"},
 		},
 	}
 
-	//TODO: For IDaaS, switch to jwt.SigningMethodRS256 and use a Private Key
 	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
 	signedAccess, err := accessToken.SignedString(accessSecret)
 	if err != nil {
 		return nil, err
 	}
 
-	// 2. Create Refresh Token (Opaque to the user, strictly for the IDaaS)
+	// 2. Create Refresh Token
 	refreshID := uuid.New()
 	refreshClaims := dto.AuthClaims{
-		// No roles needed in refresh token usually
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID.String(),
 			ExpiresAt: jwt.NewNumericDate(now.Add(7 * 24 * time.Hour)),
@@ -71,19 +68,16 @@ func GenerateTokens(userID uuid.UUID, roles []string) (*TokenPair, error) {
 }
 
 // SignRefreshToken creates a JWT string for an EXISTING refresh token ID
-// This is used during the "Grace Period" to return a token that already exists in DB
 func SignRefreshToken(refreshID uuid.UUID, userID uuid.UUID) (string, error) {
 	now := time.Now()
 
 	claims := dto.AuthClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
-			Subject: userID.String(),
-			// We set the standard expiry again.
-			// (In a strict system, you might want to pass the original db expiration here)
+			Subject:   userID.String(),
 			ExpiresAt: jwt.NewNumericDate(now.Add(7 * 24 * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(now),
 			Issuer:    "my-idaas",
-			ID:        refreshID.String(), // Important: Use the EXISTING ID
+			ID:        refreshID.String(),
 		},
 	}
 
@@ -91,9 +85,25 @@ func SignRefreshToken(refreshID uuid.UUID, userID uuid.UUID) (string, error) {
 	return token.SignedString(refreshSecret)
 }
 
-//func getEnv(key, fallback string) string {
-//	if value, exists := os.LookupEnv(key); exists {
-//		return value
-//	}
-//	return fallback
-//}
+// GenerateAccessTokenOnly creates a short-lived JWT for the user.
+// Used specifically in Refresh Token Rotation (Grace Period).
+func GenerateAccessTokenOnly(userID uuid.UUID, roles []string) (string, error) {
+	now := time.Now()
+
+	// Use dto.AuthClaims to ensure this token looks EXACTLY like a normal login token
+	claims := dto.AuthClaims{
+		Roles: roles,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   userID.String(),
+			ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
+			IssuedAt:  jwt.NewNumericDate(now),
+			Issuer:    "my-idaas",
+			Audience:  jwt.ClaimStrings{"my-game-server", "smoking-app"},
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+	// ✅ FIX: Use 'accessSecret' instead of undefined 'secretKey'
+	return token.SignedString(accessSecret)
+}
