@@ -37,7 +37,7 @@ func GenerateTokens(userID uuid.UUID, roles []string) (*TokenPair, error) {
 		},
 	}
 
-	// TODO: For IDaaS, switch to jwt.SigningMethodRS256 and use a Private Key
+	//TODO: For IDaaS, switch to jwt.SigningMethodRS256 and use a Private Key
 	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
 	signedAccess, err := accessToken.SignedString(accessSecret)
 	if err != nil {

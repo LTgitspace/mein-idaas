@@ -25,7 +25,7 @@ const docTemplate = `{
     "paths": {
         "/auth/login": {
             "post": {
-                "description": "Returns access and refresh token pair",
+                "description": "Validates credentials, returns Access Token in JSON, and sets Refresh Token in HttpOnly Cookie.",
                 "consumes": [
                     "application/json"
                 ],
@@ -49,9 +49,16 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK",
+                        "description": "Returns {access_token, expires_in}",
                         "schema": {
-                            "$ref": "#/definitions/dto.LoginResponse"
+                            "type": "object",
+                            "additionalProperties": true
+                        },
+                        "headers": {
+                            "Set-Cookie": {
+                                "type": "string",
+                                "description": "refresh_token=...; HttpOnly; Secure"
+                            }
                         }
                     },
                     "400": {
@@ -86,7 +93,7 @@ const docTemplate = `{
         },
         "/auth/refresh": {
             "post": {
-                "description": "Exchange a refresh token for a new token pair (rotation)",
+                "description": "Reads 'refresh_token' from HttpOnly Cookie and issues a new Access/Refresh pair.",
                 "consumes": [
                     "application/json"
                 ],
@@ -96,23 +103,27 @@ const docTemplate = `{
                 "tags": [
                     "auth"
                 ],
-                "summary": "Rotate refresh token and issue new access token",
+                "summary": "Rotate refresh token",
                 "parameters": [
                     {
-                        "description": "Refresh payload",
-                        "name": "payload",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/dto.RefreshRequest"
-                        }
+                        "type": "string",
+                        "description": "Cookie containing refresh_token",
+                        "name": "Cookie",
+                        "in": "header"
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK",
+                        "description": "Returns {access_token, expires_in}",
                         "schema": {
-                            "$ref": "#/definitions/dto.RefreshResponse"
+                            "type": "object",
+                            "additionalProperties": true
+                        },
+                        "headers": {
+                            "Set-Cookie": {
+                                "type": "string",
+                                "description": "refresh_token=...; HttpOnly; Secure"
+                            }
                         }
                     },
                     "400": {
@@ -147,7 +158,7 @@ const docTemplate = `{
         },
         "/auth/register": {
             "post": {
-                "description": "Create a user account with email and password",
+                "description": "Create a user account with email and password. Assigns default 'user' role.",
                 "consumes": [
                     "application/json"
                 ],
@@ -210,46 +221,6 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "password": {
-                    "type": "string"
-                }
-            }
-        },
-        "dto.LoginResponse": {
-            "type": "object",
-            "properties": {
-                "access_token": {
-                    "type": "string"
-                },
-                "expires_in": {
-                    "description": "seconds",
-                    "type": "integer"
-                },
-                "refresh_token": {
-                    "type": "string"
-                }
-            }
-        },
-        "dto.RefreshRequest": {
-            "type": "object",
-            "required": [
-                "refresh_token"
-            ],
-            "properties": {
-                "refresh_token": {
-                    "type": "string"
-                }
-            }
-        },
-        "dto.RefreshResponse": {
-            "type": "object",
-            "properties": {
-                "access_token": {
-                    "type": "string"
-                },
-                "expires_in": {
-                    "type": "integer"
-                },
-                "refresh_token": {
                     "type": "string"
                 }
             }

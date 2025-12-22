@@ -10,32 +10,6 @@ definitions:
     - email
     - password
     type: object
-  dto.LoginResponse:
-    properties:
-      access_token:
-        type: string
-      expires_in:
-        description: seconds
-        type: integer
-      refresh_token:
-        type: string
-    type: object
-  dto.RefreshRequest:
-    properties:
-      refresh_token:
-        type: string
-    required:
-    - refresh_token
-    type: object
-  dto.RefreshResponse:
-    properties:
-      access_token:
-        type: string
-      expires_in:
-        type: integer
-      refresh_token:
-        type: string
-    type: object
   dto.RegisterRequest:
     properties:
       email:
@@ -81,7 +55,8 @@ paths:
     post:
       consumes:
       - application/json
-      description: Returns access and refresh token pair
+      description: Validates credentials, returns Access Token in JSON, and sets Refresh
+        Token in HttpOnly Cookie.
       parameters:
       - description: Login payload
         in: body
@@ -93,9 +68,14 @@ paths:
       - application/json
       responses:
         "200":
-          description: OK
+          description: Returns {access_token, expires_in}
+          headers:
+            Set-Cookie:
+              description: refresh_token=...; HttpOnly; Secure
+              type: string
           schema:
-            $ref: '#/definitions/dto.LoginResponse'
+            additionalProperties: true
+            type: object
         "400":
           description: Bad Request
           schema:
@@ -121,21 +101,25 @@ paths:
     post:
       consumes:
       - application/json
-      description: Exchange a refresh token for a new token pair (rotation)
+      description: Reads 'refresh_token' from HttpOnly Cookie and issues a new Access/Refresh
+        pair.
       parameters:
-      - description: Refresh payload
-        in: body
-        name: payload
-        required: true
-        schema:
-          $ref: '#/definitions/dto.RefreshRequest'
+      - description: Cookie containing refresh_token
+        in: header
+        name: Cookie
+        type: string
       produces:
       - application/json
       responses:
         "200":
-          description: OK
+          description: Returns {access_token, expires_in}
+          headers:
+            Set-Cookie:
+              description: refresh_token=...; HttpOnly; Secure
+              type: string
           schema:
-            $ref: '#/definitions/dto.RefreshResponse'
+            additionalProperties: true
+            type: object
         "400":
           description: Bad Request
           schema:
@@ -154,14 +138,15 @@ paths:
             additionalProperties:
               type: string
             type: object
-      summary: Rotate refresh token and issue new access token
+      summary: Rotate refresh token
       tags:
       - auth
   /auth/register:
     post:
       consumes:
       - application/json
-      description: Create a user account with email and password
+      description: Create a user account with email and password. Assigns default
+        'user' role.
       parameters:
       - description: Register payload
         in: body
