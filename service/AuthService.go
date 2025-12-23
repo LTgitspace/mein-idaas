@@ -2,6 +2,8 @@ package service
 
 import (
 	"errors"
+	"os"
+	_ "strconv"
 	"time"
 
 	"mein-idaas/dto"
@@ -14,7 +16,7 @@ type AuthService struct {
 	userRepo       repository.UserRepository
 	credentialRepo repository.CredentialRepository
 	refreshRepo    repository.RefreshTokenRepository
-	roleRepo       repository.RoleRepository // <--- ADDED
+	roleRepo       repository.RoleRepository
 }
 
 // NewAuthService now requires RoleRepository
@@ -22,13 +24,13 @@ func NewAuthService(
 	u repository.UserRepository,
 	c repository.CredentialRepository,
 	r repository.RefreshTokenRepository,
-	role repository.RoleRepository, // <--- ADDED argument
+	role repository.RoleRepository,
 ) *AuthService {
 	return &AuthService{
 		userRepo:       u,
 		credentialRepo: c,
 		refreshRepo:    r,
-		roleRepo:       role, // <--- ADDED assignment
+		roleRepo:       role,
 	}
 }
 
@@ -83,6 +85,9 @@ func (s *AuthService) Register(req *dto.RegisterRequest) (*dto.RegisterResponse,
 		Type:   model.CredTypePassword, // Make sure this matches your Enum
 		Value:  hashed,
 	}
+
+	//if err := tx.Create(cred).Error; err != nil {
+
 	if err := tx.Debug().Create(cred).Error; err != nil {
 		tx.Rollback()
 		// This will print the exact SQL error to your API response
@@ -133,11 +138,18 @@ func (s *AuthService) Login(req *dto.LoginRequest, clientIP, userAgent string) (
 
 	hash := util.HashToken(pair.RefreshToken)
 
+	// Get refresh TTL from env (default 168h = 7 days)
+	refreshTTLStr := os.Getenv("JWT_REFRESH_TTL")
+	if refreshTTLStr == "" {
+		refreshTTLStr = "168h"
+	}
+	refreshTTL, _ := time.ParseDuration(refreshTTLStr)
+
 	rt := &model.RefreshToken{
 		ID:        pair.RefreshID,
 		UserID:    user.ID,
 		TokenHash: hash,
-		ExpiresAt: time.Now().Add(7 * 24 * time.Hour),
+		ExpiresAt: time.Now().Add(refreshTTL),
 		ClientIP:  clientIP,
 		UserAgent: userAgent,
 	}
@@ -145,70 +157,18 @@ func (s *AuthService) Login(req *dto.LoginRequest, clientIP, userAgent string) (
 		return nil, err
 	}
 
-	return &dto.LoginResponse{AccessToken: pair.AccessToken, RefreshToken: pair.RefreshToken, ExpiresIn: 15 * 60}, nil
+	// Get access token TTL in seconds for response
+	accessTTLStr := os.Getenv("JWT_ACCESS_TTL")
+	if accessTTLStr == "" {
+		accessTTLStr = "15m"
+	}
+	accessTTL, _ := time.ParseDuration(accessTTLStr)
+	expiresIn := int(accessTTL.Seconds())
+
+	return &dto.LoginResponse{AccessToken: pair.AccessToken, RefreshToken: pair.RefreshToken, ExpiresIn: expiresIn}, nil
 }
 
 // Refresh rotates refresh tokens and issues a new access token
-//func (s *AuthService) Refresh(req *dto.RefreshRequest, clientIP, userAgent string) (*dto.RefreshResponse, error) {
-//	userIDFromToken, refreshID, err := util.ParseRefreshToken(req.RefreshToken)
-//	if err != nil {
-//		return nil, errors.New("invalid refresh token")
-//	}
-//
-//	existing, err := s.refreshRepo.GetByID(refreshID)
-//	if err != nil {
-//		return nil, errors.New("invalid or unknown refresh token")
-//	}
-//
-//	if existing.UserID != userIDFromToken {
-//		return nil, errors.New("refresh token user mismatch")
-//	}
-//
-//	if existing.TokenHash != util.HashToken(req.RefreshToken) {
-//		return nil, errors.New("refresh token mismatch")
-//	}
-//
-//	if !existing.IsValid() {
-//		return nil, errors.New("refresh token expired or revoked")
-//	}
-//
-//	// Fetch User to get LATEST roles
-//	user, err := s.userRepo.GetByID(existing.UserID)
-//	if err != nil {
-//		return nil, errors.New("user not found")
-//	}
-//
-//	var roleCodes []string
-//	for _, r := range user.Roles {
-//		roleCodes = append(roleCodes, r.Code)
-//	}
-//
-//	// Generate new tokens
-//	pair, err := util.GenerateTokens(existing.UserID, roleCodes)
-//	if err != nil {
-//		return nil, err
-//	}
-//
-//	if err := s.refreshRepo.RevokeByID(existing.ID); err != nil {
-//		// log error
-//	}
-//
-//	newHash := util.HashToken(pair.RefreshToken)
-//	newRT := &model.RefreshToken{
-//		ID:        pair.RefreshID,
-//		UserID:    existing.UserID,
-//		TokenHash: newHash,
-//		ExpiresAt: time.Now().Add(7 * 24 * time.Hour),
-//		ClientIP:  clientIP,
-//		UserAgent: userAgent,
-//	}
-//	if err := s.refreshRepo.Create(newRT); err != nil {
-//		return nil, err
-//	}
-//
-//	return &dto.RefreshResponse{AccessToken: pair.AccessToken, RefreshToken: pair.RefreshToken, ExpiresIn: 15 * 60}, nil
-//}
-
 func (s *AuthService) Refresh(req *dto.RefreshRequest, clientIP, userAgent string) (*dto.RefreshResponse, error) {
 	// 1. Parse & Validate basic structure
 	userIDFromToken, refreshID, err := util.ParseRefreshToken(req.RefreshToken)
@@ -228,7 +188,7 @@ func (s *AuthService) Refresh(req *dto.RefreshRequest, clientIP, userAgent strin
 	}
 	if existing.RevokedAt != nil {
 		return nil, errors.New("token was revoked")
-	} // Manual logout
+	}
 
 	// ---------------------------------------------------------
 	// 4. GRACE PERIOD & REUSE DETECTION LOGIC
@@ -237,11 +197,15 @@ func (s *AuthService) Refresh(req *dto.RefreshRequest, clientIP, userAgent strin
 	if existing.ReplacedAt != nil {
 		duration := time.Since(*existing.ReplacedAt)
 
-		// CASE A: Theft Detected (Replay attack after 10s)
-		if duration > 10*time.Second {
-			// "Nuclear Option": Revoke ALL tokens for this user because their family is compromised
-			// You need to add this method to your Repo
-			// s.refreshRepo.RevokeAllForUser(existing.UserID)
+		// Get grace period from env (default 10s)
+		gracePeriodStr := os.Getenv("REFRESH_GRACE_PERIOD")
+		if gracePeriodStr == "" {
+			gracePeriodStr = "10s"
+		}
+		gracePeriod, _ := time.ParseDuration(gracePeriodStr)
+
+		// CASE A: Theft Detected (Replay attack after grace period)
+		if duration > gracePeriod {
 			return nil, errors.New("refresh token reuse detected: account locked for security")
 		}
 
@@ -266,26 +230,30 @@ func (s *AuthService) Refresh(req *dto.RefreshRequest, clientIP, userAgent strin
 			roleCodes = append(roleCodes, r.Code)
 		}
 
-		// 3. Generate ONLY a new Access Token (Use a helper or ignore the returned RT)
-		// We DO NOT want a new Refresh ID. We want to keep the chain A -> B.
+		// 3. Generate ONLY a new Access Token
 		newAccessToken, err := util.GenerateAccessTokenOnly(user.ID, roleCodes)
 		if err != nil {
 			return nil, err
 		}
 
-		// 4. Re-sign the EXISTING child token ID so the client gets a valid JWT string
-		// This ensures the client gets the same Refresh Token ID that is already in the DB
+		// 4. Re-sign the EXISTING child token ID
 		refreshTokenString, err := util.SignRefreshToken(childToken.ID, childToken.UserID)
 		if err != nil {
 			return nil, err
 		}
 
-		// 5. RETURN IMMEDIATELY. DO NOT UPDATE DB.
-		// The DB is already correct (A -> ReplacedBy -> B). We just resend the info.
+		// 5. Get access token TTL in seconds for response
+		accessTTLStr := os.Getenv("JWT_ACCESS_TTL")
+		if accessTTLStr == "" {
+			accessTTLStr = "15m"
+		}
+		accessTTL, _ := time.ParseDuration(accessTTLStr)
+		expiresIn := int(accessTTL.Seconds())
+
 		return &dto.RefreshResponse{
 			AccessToken:  newAccessToken,
 			RefreshToken: refreshTokenString,
-			ExpiresIn:    900,
+			ExpiresIn:    expiresIn,
 		}, nil
 	}
 
@@ -310,13 +278,20 @@ func (s *AuthService) Refresh(req *dto.RefreshRequest, clientIP, userAgent strin
 		return nil, err
 	}
 
+	// Get refresh TTL from env (default 168h = 7 days)
+	refreshTTLStr := os.Getenv("JWT_REFRESH_TTL")
+	if refreshTTLStr == "" {
+		refreshTTLStr = "168h"
+	}
+	refreshTTL, _ := time.ParseDuration(refreshTTLStr)
+
 	// Save the NEW Token
 	newHash := util.HashToken(pair.RefreshToken)
 	newRT := &model.RefreshToken{
 		ID:        pair.RefreshID,
 		UserID:    existing.UserID,
 		TokenHash: newHash,
-		ExpiresAt: time.Now().Add(7 * 24 * time.Hour),
+		ExpiresAt: time.Now().Add(refreshTTL),
 		ClientIP:  clientIP,
 		UserAgent: userAgent,
 	}
@@ -329,11 +304,17 @@ func (s *AuthService) Refresh(req *dto.RefreshRequest, clientIP, userAgent strin
 	existing.ReplacedAt = &now
 	existing.ReplacedByTokenID = &pair.RefreshID
 	if err := s.refreshRepo.Update(existing); err != nil {
-		// If we fail to mark the old one as replaced, we have a security issue.
-		// Ideally, delete the 'newRT' we just created to prevent orphans.
 		s.refreshRepo.Delete(newRT.ID)
 		return nil, errors.New("failed to rotate token")
 	}
 
-	return &dto.RefreshResponse{AccessToken: pair.AccessToken, RefreshToken: pair.RefreshToken, ExpiresIn: 900}, nil
+	// Get access token TTL in seconds for response
+	accessTTLStr := os.Getenv("JWT_ACCESS_TTL")
+	if accessTTLStr == "" {
+		accessTTLStr = "15m"
+	}
+	accessTTL, _ := time.ParseDuration(accessTTLStr)
+	expiresIn := int(accessTTL.Seconds())
+
+	return &dto.RefreshResponse{AccessToken: pair.AccessToken, RefreshToken: pair.RefreshToken, ExpiresIn: expiresIn}, nil
 }

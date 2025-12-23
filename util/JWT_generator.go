@@ -1,6 +1,7 @@
 package util
 
 import (
+	"log"
 	"mein-idaas/dto"
 	"time"
 
@@ -14,13 +15,28 @@ type TokenPair struct {
 	RefreshID    uuid.UUID
 }
 
-// Load keys once at startup
+// Load keys and TTLs once at startup
 var (
-	accessSecret  = []byte(getEnv("JWT_ACCESS_SECRET", "fallback-dev-secret"))
-	refreshSecret = []byte(getEnv("JWT_REFRESH_SECRET", "fallback-dev-secret"))
+	accessTTL  = parseTokenTTL("JWT_ACCESS_TTL", 15*time.Minute)
+	refreshTTL = parseTokenTTL("JWT_REFRESH_TTL", 168*time.Hour)
+	issuer     = getEnv("JWT_ISSUER", "mein-idaas")
 )
 
-// GenerateTokens creates both Access and Refresh tokens
+// parseTokenTTL parses a duration from env variable or returns default
+func parseTokenTTL(envKey string, defaultDuration time.Duration) time.Duration {
+	ttlStr := getEnv(envKey, "")
+	if ttlStr == "" {
+		return defaultDuration
+	}
+	duration, err := time.ParseDuration(ttlStr)
+	if err != nil {
+		log.Printf("warning: invalid %s value '%s', using default %v\n", envKey, ttlStr, defaultDuration)
+		return defaultDuration
+	}
+	return duration
+}
+
+// GenerateTokens creates both Access and Refresh tokens using RS256
 func GenerateTokens(userID uuid.UUID, roles []string) (*TokenPair, error) {
 	now := time.Now()
 
@@ -29,15 +45,15 @@ func GenerateTokens(userID uuid.UUID, roles []string) (*TokenPair, error) {
 		Roles: roles,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID.String(),
-			ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(accessTTL)),
 			IssuedAt:  jwt.NewNumericDate(now),
-			Issuer:    "my-idaas",
-			Audience:  jwt.ClaimStrings{"my-game-server", "smoking-app"},
+			Issuer:    issuer,
+			Audience:  jwt.ClaimStrings{"self-hosted-idaas"},
 		},
 	}
 
-	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
-	signedAccess, err := accessToken.SignedString(accessSecret)
+	accessToken := jwt.NewWithClaims(jwt.SigningMethodRS256, accessClaims)
+	signedAccess, err := accessToken.SignedString(GetPrivateKey())
 	if err != nil {
 		return nil, err
 	}
@@ -47,15 +63,15 @@ func GenerateTokens(userID uuid.UUID, roles []string) (*TokenPair, error) {
 	refreshClaims := dto.AuthClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID.String(),
-			ExpiresAt: jwt.NewNumericDate(now.Add(7 * 24 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(refreshTTL)),
 			IssuedAt:  jwt.NewNumericDate(now),
-			Issuer:    "my-idaas",
+			Issuer:    issuer,
 			ID:        refreshID.String(),
 		},
 	}
 
-	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
-	signedRefresh, err := refreshToken.SignedString(refreshSecret)
+	refreshToken := jwt.NewWithClaims(jwt.SigningMethodRS256, refreshClaims)
+	signedRefresh, err := refreshToken.SignedString(GetPrivateKey())
 	if err != nil {
 		return nil, err
 	}
@@ -74,15 +90,15 @@ func SignRefreshToken(refreshID uuid.UUID, userID uuid.UUID) (string, error) {
 	claims := dto.AuthClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID.String(),
-			ExpiresAt: jwt.NewNumericDate(now.Add(7 * 24 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(refreshTTL)),
 			IssuedAt:  jwt.NewNumericDate(now),
-			Issuer:    "my-idaas",
+			Issuer:    issuer,
 			ID:        refreshID.String(),
 		},
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(refreshSecret)
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	return token.SignedString(GetPrivateKey())
 }
 
 // GenerateAccessTokenOnly creates a short-lived JWT for the user.
@@ -95,15 +111,13 @@ func GenerateAccessTokenOnly(userID uuid.UUID, roles []string) (string, error) {
 		Roles: roles,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID.String(),
-			ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(accessTTL)),
 			IssuedAt:  jwt.NewNumericDate(now),
-			Issuer:    "my-idaas",
+			Issuer:    issuer,
 			Audience:  jwt.ClaimStrings{"my-game-server", "smoking-app"},
 		},
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-
-	// ✅ FIX: Use 'accessSecret' instead of undefined 'secretKey'
-	return token.SignedString(accessSecret)
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	return token.SignedString(GetPrivateKey())
 }

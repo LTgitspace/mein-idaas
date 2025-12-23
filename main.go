@@ -3,9 +3,11 @@ package main
 import (
 	"log"
 	"mein-idaas/seeder"
+	"os"
 
 	"github.com/gofiber/fiber/v2"
 	swag "github.com/gofiber/swagger"
+	"github.com/joho/godotenv"
 
 	_ "mein-idaas/docs" // <-- required to register swagger spec
 
@@ -20,7 +22,7 @@ import (
 // @description     A custom Identification-as-a-Service server.
 // @termsOfService  http://swagger.io/terms/
 
-// @contact.name    API Support
+/// @contact.name    API Support
 // @contact.email   support@swagger.io
 
 // @license.name    Apache 2.0
@@ -29,6 +31,16 @@ import (
 // @host            localhost:4000
 // @BasePath        /api/v1
 func main() {
+	// Load .env file with proper error handling
+	if err := godotenv.Load(); err != nil {
+		log.Printf("warning: failed to load .env file: %v (using system environment variables)\n", err)
+	}
+
+	// Initialize RSA keys for JWT signing
+	if err := util.InitRSAKeys(); err != nil {
+		log.Fatalf("failed to initialize RSA keys: %v\n", err)
+	}
+
 	db := util.InitDB()
 
 	seeder.SeedRoles(db)
@@ -38,10 +50,17 @@ func main() {
 	refreshTokenRepo := repository.NewRefreshTokenRepository(db)
 	roleRepo := repository.NewRoleRepository(db)
 
+	util.StartDailyCleanup(refreshTokenRepo)
+
 	app := fiber.New()
 	setupRoutes(app, userRepo, credentialRepo, refreshTokenRepo, roleRepo)
 
-	log.Fatal(app.Listen(":4000"))
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "4000"
+	}
+
+	log.Fatal(app.Listen(":" + port))
 }
 
 func setupRoutes(app *fiber.App, userRepo repository.UserRepository, credentialRepo repository.CredentialRepository, refreshTokenRepo repository.RefreshTokenRepository, roleRepo repository.RoleRepository) {

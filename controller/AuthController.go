@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"os"
 	"time"
 
 	"mein-idaas/dto"
@@ -73,15 +74,28 @@ func (ac *AuthController) Login(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
+	// Get refresh token TTL from env, default to 168h (7 days)
+	refreshTTL := os.Getenv("JWT_REFRESH_TTL")
+	if refreshTTL == "" {
+		refreshTTL = "168h"
+	}
+	duration, _ := time.ParseDuration(refreshTTL)
+
+	// Get cookie path from env, default to /api/v1/auth
+	cookiePath := os.Getenv("COOKIE_PATH")
+	if cookiePath == "" {
+		cookiePath = "/api/v1/auth"
+	}
+
 	// SECURE COOKIE SETTING
 	c.Cookie(&fiber.Cookie{
 		Name:     "refresh_token",
 		Value:    res.RefreshToken,
-		Expires:  time.Now().Add(7 * 24 * time.Hour), // 7 days
-		HTTPOnly: true,                               // JS cannot access
-		Secure:   true,                               // HTTPS only (set false for localhost if needed)
-		SameSite: "Strict",                           // CSRF protection
-		Path:     "/api/v1/auth",                     // Only sent to auth endpoints
+		Expires:  time.Now().Add(duration),
+		HTTPOnly: true,     // JS cannot access
+		Secure:   true,     // HTTPS only (set false for localhost if needed)
+		SameSite: "Strict", // CSRF protection
+		Path:     cookiePath,
 	})
 
 	// Return only Access Token to client memory
@@ -132,15 +146,28 @@ func (ac *AuthController) Refresh(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
+	// Get refresh token TTL from env, default to 168h (7 days)
+	refreshTTL := os.Getenv("JWT_REFRESH_TTL")
+	if refreshTTL == "" {
+		refreshTTL = "168h"
+	}
+	duration, _ := time.ParseDuration(refreshTTL)
+
+	// Get cookie path from env, default to /api/v1/auth
+	cookiePath := os.Getenv("COOKIE_PATH")
+	if cookiePath == "" {
+		cookiePath = "/api/v1/auth"
+	}
+
 	// 4. Rotate Cookie
 	c.Cookie(&fiber.Cookie{
 		Name:     "refresh_token",
 		Value:    res.RefreshToken,
-		Expires:  time.Now().Add(7 * 24 * time.Hour),
+		Expires:  time.Now().Add(duration),
 		HTTPOnly: true,
 		Secure:   true,
 		SameSite: "Strict",
-		Path:     "/api/v1/auth",
+		Path:     cookiePath,
 	})
 
 	// 5. Return new Access Token

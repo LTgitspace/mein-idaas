@@ -9,15 +9,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// ParseAccessToken now returns the full Claims object
+// ParseAccessToken validates and returns the access token claims using RS256
 func ParseAccessToken(tokenString string) (*dto.AuthClaims, error) {
 	claims := &dto.AuthClaims{}
 
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, errors.New("invalid signing method")
+		// Verify RS256 signing method
+		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, errors.New("invalid signing method, expected RS256")
 		}
-		return accessSecret, nil
+		return GetPublicKey(), nil
 	})
 
 	if err != nil || !token.Valid {
@@ -27,23 +28,23 @@ func ParseAccessToken(tokenString string) (*dto.AuthClaims, error) {
 	return claims, nil
 }
 
-// ParseRefreshToken decodes and validates a refresh token, returning userID UUID and refresh jti UUID
+// ParseRefreshToken decodes and validates a refresh token using RS256
 func ParseRefreshToken(tokenString string) (uuid.UUID, uuid.UUID, error) {
 	claims := &dto.AuthClaims{}
 
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-		// Verify signing method
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, errors.New("invalid signing method")
+		// Verify RS256 signing method
+		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, errors.New("invalid signing method, expected RS256")
 		}
-		return refreshSecret, nil
+		return GetPublicKey(), nil
 	})
 
 	if err != nil || !token.Valid {
 		return uuid.Nil, uuid.Nil, errors.New("invalid or expired refresh token")
 	}
 
-	// CHANGED: Use standard 'Subject' instead of custom 'UserID'
+	// Use standard 'Subject' claim
 	if claims.Subject == "" {
 		return uuid.Nil, uuid.Nil, errors.New("missing subject (user_id) in refresh token")
 	}
