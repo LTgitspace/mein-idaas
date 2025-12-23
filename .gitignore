@@ -1,0 +1,62 @@
+# --- Go Build Artifacts ---
+# Binaries (generic patterns)
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+
+# Output directories (common conventions)
+/bin/
+/dist/
+/out/
+/build/
+
+# --- Go Modules & Workspace ---
+# Go workspace file (Go 1.18+) - generally local only
+go.work
+go.work.sum
+
+# Vendor directory (optional: uncomment if you prefer NOT to commit dependencies)
+# vendor/
+
+# --- Testing & Coverage ---
+# Coverage profiles
+*.out
+coverage.txt
+htmlcov/
+
+# --- IDE & Editor Specific ---
+# VS Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# IntelliJ / GoLand
+.idea/
+*.iws
+*.iml
+*.ipr
+
+# --- Operating System Files ---
+# macOS
+.DS_Store
+.AppleDouble
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# --- Security & Environment ---
+# Environment variables (Sensitive data)
+.env
+.env.local
+.env.prod
+.env.test
+*.pem
+*.key
