@@ -1,0 +1,77 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: mein-idaas-db
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-xiaomi14T}
+      POSTGRES_DB: ${DB_NAME:-idaas}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mein-idaas-network
+
+  idaas:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mein-idaas-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # App
+      APP_ENV: ${APP_ENV:-development}
+      PORT: ${PORT:-4000}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+
+      # Database
+      DB_HOST: ${DB_HOST:-postgres}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-xiaomi14T}
+      DB_NAME: ${DB_NAME:-idaas}
+      DB_SSLMODE: ${DB_SSLMODE:-disable}
+
+      # JWT Configuration
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev_access_secret_change_me}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-dev_refresh_secret_change_me}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-168h}
+      REFRESH_GRACE_PERIOD: ${REFRESH_GRACE_PERIOD:-10s}
+      JWT_ISSUER: ${JWT_ISSUER:-mein-idaas}
+      CLAIM_USER_ID: ${CLAIM_USER_ID:-user_id}
+
+      # RSA Keys for RS256
+      RSA_PRIVATE_KEY: ${RSA_PRIVATE_KEY}
+      RSA_PUBLIC_KEY: ${RSA_PUBLIC_KEY}
+
+      # Swagger
+      SWAGGER_DOC_PATH: ${SWAGGER_DOC_PATH:-/swagger/doc.json}
+      SWAGGER_HOST: ${SWAGGER_HOST:-localhost:4000}
+
+      # Cookies
+      COOKIE_PATH: ${COOKIE_PATH:-/api/v1/auth}
+
+    ports:
+      - "${PORT:-4000}:4000"
+    networks:
+      - mein-idaas-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
+networks:
+  mein-idaas-network:
+    driver: bridge
+
