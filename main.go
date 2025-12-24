@@ -49,11 +49,14 @@ func main() {
 	credentialRepo := repository.NewCredentialRepository(db)
 	refreshTokenRepo := repository.NewRefreshTokenRepository(db)
 	roleRepo := repository.NewRoleRepository(db)
+	verificationRepo := repository.NewInMemoryVerificationRepo()
 
 	util.StartDailyCleanup(refreshTokenRepo)
+	emailService := service.NewEmailService()
+	verificationService := service.NewVerificationService(verificationRepo, emailService)
 
 	app := fiber.New()
-	setupRoutes(app, userRepo, credentialRepo, refreshTokenRepo, roleRepo)
+	setupRoutes(app, userRepo, credentialRepo, refreshTokenRepo, roleRepo, verificationService)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -63,7 +66,7 @@ func main() {
 	log.Fatal(app.Listen(":" + port))
 }
 
-func setupRoutes(app *fiber.App, userRepo repository.UserRepository, credentialRepo repository.CredentialRepository, refreshTokenRepo repository.RefreshTokenRepository, roleRepo repository.RoleRepository) {
+func setupRoutes(app *fiber.App, userRepo repository.UserRepository, credentialRepo repository.CredentialRepository, refreshTokenRepo repository.RefreshTokenRepository, roleRepo repository.RoleRepository, verificationService *service.VerificationService) {
 	app.Get("/health", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok"})
 	})
@@ -72,11 +75,15 @@ func setupRoutes(app *fiber.App, userRepo repository.UserRepository, credentialR
 
 	authService := service.NewAuthService(userRepo, credentialRepo, refreshTokenRepo, roleRepo)
 	authController := controller.NewAuthController(authService)
+	verifyController := controller.NewVerificationController(authService, verificationService)
 
 	api := app.Group("/api/v1")
 	auth := api.Group("/auth")
+	verify := api.Group("/verify")
 
 	auth.Post("/register", authController.Register)
 	auth.Post("/login", authController.Login)
 	auth.Post("/refresh", authController.Refresh)
+
+	verify.Post("/verify", verifyController.VerifyEmail)
 }

@@ -38,11 +38,21 @@ definitions:
       name:
         type: string
     type: object
+  dto.VerifyEmailRequest:
+    properties:
+      code:
+        description: Enforce exact 6 digits
+        type: string
+      email:
+        type: string
+    required:
+    - code
+    - email
+    type: object
 host: localhost:4000
 info:
   contact:
     email: support@swagger.io
-    name: API Support
   description: A custom Identification-as-a-Service server.
   license:
     name: Apache 2.0
@@ -176,4 +186,40 @@ paths:
       summary: Register a new user
       tags:
       - auth
+  /auth/verify:
+    post:
+      consumes:
+      - application/json
+      description: Verifies the 6-digit code sent to email. If successful, activates
+        account and logs user in (returns tokens).
+      parameters:
+      - description: Verification payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/dto.VerifyEmailRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Verify email with OTP
+      tags:
+      - verification
 swagger: "2.0"

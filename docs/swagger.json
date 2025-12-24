@@ -5,7 +5,6 @@
         "title": "Mein IDaaS API",
         "termsOfService": "http://swagger.io/terms/",
         "contact": {
-            "name": "API Support",
             "email": "support@swagger.io"
         },
         "license": {
@@ -201,6 +200,59 @@
                     }
                 }
             }
+        },
+        "/auth/verify": {
+            "post": {
+                "description": "Verifies the 6-digit code sent to email. If successful, activates account and logs user in (returns tokens).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "verification"
+                ],
+                "summary": "Verify email with OTP",
+                "parameters": [
+                    {
+                        "description": "Verification payload",
+                        "name": "payload",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/dto.VerifyEmailRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -254,6 +306,22 @@
                     "type": "string"
                 },
                 "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.VerifyEmailRequest": {
+            "type": "object",
+            "required": [
+                "code",
+                "email"
+            ],
+            "properties": {
+                "code": {
+                    "description": "Enforce exact 6 digits",
+                    "type": "string"
+                },
+                "email": {
                     "type": "string"
                 }
             }

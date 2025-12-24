@@ -6,6 +6,7 @@ import (
 	_ "strconv"
 	"time"
 
+	"github.com/google/uuid"
 	"mein-idaas/dto"
 	"mein-idaas/model"
 	"mein-idaas/repository"
@@ -317,4 +318,45 @@ func (s *AuthService) Refresh(req *dto.RefreshRequest, clientIP, userAgent strin
 	expiresIn := int(accessTTL.Seconds())
 
 	return &dto.RefreshResponse{AccessToken: pair.AccessToken, RefreshToken: pair.RefreshToken, ExpiresIn: expiresIn}, nil
+}
+
+// GetUserByID retrieves a user by ID with their roles and credentials
+func (s *AuthService) GetUserByID(userID string) (*model.User, error) {
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return nil, errors.New("invalid user ID format")
+	}
+	return s.userRepo.GetByID(uid)
+}
+
+// GetUserByEmail retrieves a user by email with their roles and credentials
+func (s *AuthService) GetUserByEmail(email string) (*model.User, error) {
+	return s.userRepo.GetByEmail(email)
+}
+
+// StoreRefreshToken stores a refresh token in the database
+func (s *AuthService) StoreRefreshToken(tokenID string, userID interface{}, tokenHash string, ttl time.Duration, clientIP, userAgent string) error {
+	// Parse tokenID as UUID
+	uuidID := uuid.MustParse(tokenID)
+
+	// Ensure userID is uuid.UUID
+	var uuidUserID uuid.UUID
+	switch v := userID.(type) {
+	case uuid.UUID:
+		uuidUserID = v
+	case string:
+		uuidUserID = uuid.MustParse(v)
+	default:
+		return errors.New("invalid user ID type")
+	}
+
+	rt := &model.RefreshToken{
+		ID:        uuidID,
+		UserID:    uuidUserID,
+		TokenHash: tokenHash,
+		ExpiresAt: time.Now().Add(ttl),
+		ClientIP:  clientIP,
+		UserAgent: userAgent,
+	}
+	return s.refreshRepo.Create(rt)
 }
