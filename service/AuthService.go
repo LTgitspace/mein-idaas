@@ -2,36 +2,41 @@ package service
 
 import (
 	"errors"
+	"log"
 	"os"
 	_ "strconv"
 	"time"
 
-	"github.com/google/uuid"
 	"mein-idaas/dto"
 	"mein-idaas/model"
 	"mein-idaas/repository"
 	"mein-idaas/util"
+
+	"github.com/google/uuid"
 )
 
 type AuthService struct {
-	userRepo       repository.UserRepository
-	credentialRepo repository.CredentialRepository
-	refreshRepo    repository.RefreshTokenRepository
-	roleRepo       repository.RoleRepository
+	userRepo        repository.UserRepository
+	credentialRepo  repository.CredentialRepository
+	refreshRepo     repository.RefreshTokenRepository
+	roleRepo        repository.RoleRepository
+	verificationSvc *VerificationService
 }
 
-// NewAuthService now requires RoleRepository
+// NewAuthService now requires RoleRepository and VerificationService
 func NewAuthService(
 	u repository.UserRepository,
 	c repository.CredentialRepository,
 	r repository.RefreshTokenRepository,
 	role repository.RoleRepository,
+	verification *VerificationService,
 ) *AuthService {
 	return &AuthService{
-		userRepo:       u,
-		credentialRepo: c,
-		refreshRepo:    r,
-		roleRepo:       role,
+		userRepo:        u,
+		credentialRepo:  c,
+		refreshRepo:     r,
+		roleRepo:        role,
+		verificationSvc: verification,
 	}
 }
 
@@ -87,8 +92,6 @@ func (s *AuthService) Register(req *dto.RegisterRequest) (*dto.RegisterResponse,
 		Value:  hashed,
 	}
 
-	//if err := tx.Create(cred).Error; err != nil {
-
 	if err := tx.Debug().Create(cred).Error; err != nil {
 		tx.Rollback()
 		// This will print the exact SQL error to your API response
@@ -98,6 +101,17 @@ func (s *AuthService) Register(req *dto.RegisterRequest) (*dto.RegisterResponse,
 	// 7. Commit (Save everything permanently)
 	if err := tx.Commit().Error; err != nil {
 		return nil, err
+	}
+
+	// 8. Trigger verification email asynchronously (log failures)
+	if s.verificationSvc != nil {
+		if err := s.verificationSvc.SendVerificationCode(user.ID.String(), user.Email); err != nil {
+			log.Printf("failed to initiate verification email for %s: %v", user.Email, err)
+		} else {
+			log.Printf("verification email initiated for %s", user.Email)
+		}
+	} else {
+		log.Printf("no verification service configured; skipping verification email for %s", user.Email)
 	}
 
 	return &dto.RegisterResponse{ID: user.ID.String(), Name: user.Name, Email: user.Email}, nil
@@ -123,6 +137,19 @@ func (s *AuthService) Login(req *dto.LoginRequest, clientIP, userAgent string) (
 
 	if err := util.ComparePassword(pwCred.Value, req.Password); err != nil {
 		return nil, errors.New("invalid credentials")
+	}
+
+	// Check if email is verified
+	if !user.IsEmailVerified {
+		// Send verification email asynchronously (log failures)
+		if s.verificationSvc != nil {
+			if err := s.verificationSvc.SendVerificationCode(user.ID.String(), user.Email); err != nil {
+				log.Printf("failed to send verification email for %s: %v", user.Email, err)
+			} else {
+				log.Printf("verification email sent for unverified user %s", user.Email)
+			}
+		}
+		return nil, errors.New("email not verified")
 	}
 
 	// Extract Roles for Token
@@ -305,7 +332,7 @@ func (s *AuthService) Refresh(req *dto.RefreshRequest, clientIP, userAgent strin
 	existing.ReplacedAt = &now
 	existing.ReplacedByTokenID = &pair.RefreshID
 	if err := s.refreshRepo.Update(existing); err != nil {
-		s.refreshRepo.Delete(newRT.ID)
+		_ = s.refreshRepo.Delete(newRT.ID)
 		return nil, errors.New("failed to rotate token")
 	}
 
@@ -359,4 +386,27 @@ func (s *AuthService) StoreRefreshToken(tokenID string, userID interface{}, toke
 		UserAgent: userAgent,
 	}
 	return s.refreshRepo.Create(rt)
+}
+
+// MarkEmailVerified sets IsEmailVerified = true for the specified user
+func (s *AuthService) MarkEmailVerified(userID string) error {
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return errors.New("invalid user ID format")
+	}
+
+	user, err := s.userRepo.GetByID(uid)
+	if err != nil {
+		return err
+	}
+
+	if user.IsEmailVerified {
+		return nil
+	}
+
+	user.IsEmailVerified = true
+	if err := s.userRepo.Update(user); err != nil {
+		return err
+	}
+	return nil
 }

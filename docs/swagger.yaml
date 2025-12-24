@@ -38,6 +38,13 @@ definitions:
       name:
         type: string
     type: object
+  dto.ResendOTPRequest:
+    properties:
+      email:
+        type: string
+    required:
+    - email
+    type: object
   dto.VerifyEmailRequest:
     properties:
       code:
@@ -186,12 +193,55 @@ paths:
       summary: Register a new user
       tags:
       - auth
+  /auth/resend:
+    post:
+      consumes:
+      - application/json
+      description: Generates and sends a new verification code to the specified email
+        if the user exists.
+      parameters:
+      - description: Resend payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/dto.ResendOTPRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Resend verification code to email
+      tags:
+      - verification
   /auth/verify:
     post:
       consumes:
       - application/json
       description: Verifies the 6-digit code sent to email. If successful, activates
-        account and logs user in (returns tokens).
+        account (sets isEmailVerified=true).
       parameters:
       - description: Verification payload
         in: body
@@ -215,6 +265,12 @@ paths:
             type: object
         "401":
           description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
           schema:
             additionalProperties:
               type: string

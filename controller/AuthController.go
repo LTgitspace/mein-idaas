@@ -46,7 +46,7 @@ func (ac *AuthController) Register(c *fiber.Ctx) error {
 
 // Login godoc
 // @Summary      Login with email and password
-// @Description  Validates credentials, returns Access Token in JSON, and sets Refresh Token in HttpOnly Cookie.
+// @Description  Validates credentials, returns Access Token in JSON, and sets Refresh Token in HttpOnly Cookie. If email is not verified, sends verification email and returns 403.
 // @Tags         auth
 // @Accept       json
 // @Produce      json
@@ -55,6 +55,7 @@ func (ac *AuthController) Register(c *fiber.Ctx) error {
 // @Header       200  {string}  Set-Cookie "refresh_token=...; HttpOnly; Secure"
 // @Failure      400  {object}  map[string]string
 // @Failure      401  {object}  map[string]string
+// @Failure      403  {object}  map[string]string "Email not verified - verification email sent"
 // @Failure      500  {object}  map[string]string
 // @Router       /auth/login [post]
 func (ac *AuthController) Login(c *fiber.Ctx) error {
@@ -70,6 +71,9 @@ func (ac *AuthController) Login(c *fiber.Ctx) error {
 	if err != nil {
 		if err.Error() == "invalid credentials" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid credentials"})
+		}
+		if err.Error() == "email not verified" {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "email not verified", "message": "verification email has been sent to your email address"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}

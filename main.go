@@ -33,12 +33,12 @@ import (
 func main() {
 	// Load .env file with proper error handling
 	if err := godotenv.Load(); err != nil {
-		log.Printf("warning: failed to load .env file: %v (using system environment variables)\n", err)
+		log.Printf("warning: failed to load .env file: %v (using system environment variables)", err)
 	}
 
 	// Initialize RSA keys for JWT signing
 	if err := util.InitRSAKeys(); err != nil {
-		log.Fatalf("failed to initialize RSA keys: %v\n", err)
+		log.Fatalf("failed to initialize RSA keys: %v", err)
 	}
 
 	db := util.InitDB()
@@ -73,17 +73,19 @@ func setupRoutes(app *fiber.App, userRepo repository.UserRepository, credentialR
 
 	app.Get("/swagger/*", swag.HandlerDefault)
 
-	authService := service.NewAuthService(userRepo, credentialRepo, refreshTokenRepo, roleRepo)
+	// create services and controllers
+	authService := service.NewAuthService(userRepo, credentialRepo, refreshTokenRepo, roleRepo, verificationService)
 	authController := controller.NewAuthController(authService)
 	verifyController := controller.NewVerificationController(authService, verificationService)
 
 	api := app.Group("/api/v1")
 	auth := api.Group("/auth")
-	verify := api.Group("/verify")
 
 	auth.Post("/register", authController.Register)
 	auth.Post("/login", authController.Login)
 	auth.Post("/refresh", authController.Refresh)
 
-	verify.Post("/verify", verifyController.VerifyEmail)
+	// verification endpoints
+	auth.Post("/verify", verifyController.VerifyEmail)
+	auth.Post("/resend", verifyController.ResendVerificationCode)
 }

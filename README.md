@@ -7,9 +7,11 @@ A lightweight, enterprise-free Identification-as-a-Service (IDaaS) platform buil
 Mein IDaaS provides a self-hosted alternative to enterprise IDaaS solutions like Okta or Azure AD. Perfect for developers who want:
 
 - **Simple JWT-based authentication** with access and refresh tokens
-- **Token rotation** every 7 days for enhanced security
+- **Token rotation** every 7 days with grace period for enhanced security
+- **Email verification** with OTP codes (6-digit verification)
 - **Role-based access control (RBAC)** with granular permissions
 - **PostgreSQL persistence** with GORM ORM
+- **RSA-256 JWT signing** for asymmetric key security
 - **Built-in Swagger documentation** for easy API exploration
 - **Zero enterprise complexity** - just what you need
 
@@ -25,7 +27,7 @@ The project follows a clean layered architecture:
                │
 ┌──────────────▼──────────────────┐
 │     Service Layer               │ (Business Logic)
-│  (Auth, Token Management)       │
+│  (Auth, Email, Verification)    │
 └──────────────┬──────────────────┘
                │
 ┌──────────────▼──────────────────┐
@@ -45,51 +47,114 @@ mein-idaas/
 ├── main.go                 # Application entry point & route setup
 ├── go.mod & go.sum        # Dependency management
 ├── refresh_token_flow.md  # Token rotation flow documentation
+├── README.md              # This file
 │
-├── controller/            # HTTP handlers (Fiber)
-│   └── AuthController.go # Register, Login, Refresh endpoints
+├── controller/
+│   ├── AuthController.go        # Register, Login, Refresh endpoints
+│   └── VerificationController.go # Email verification endpoints
 │
-├── service/              # Business logic
-│   └── AuthService.go    # Core authentication & authorization
+├── service/
+│   ├── AuthService.go           # Core authentication & authorization
+│   ├── VerificationService.go   # Email verification logic
+│   └── EmailService.go          # Email sending (SMTP)
 │
-├── repository/           # Data access layer
-│   └── Repository.go     # User, Credential, RefreshToken repositories
+├── repository/
+│   ├── UserRepository.go                    # User CRUD
+│   ├── CredentialRepository.go              # Credential storage
+│   ├── RefreshTokenRepository.go            # Refresh token management
+│   ├── RoleRepository.go                    # Role queries
+│   ├── VerificationRepository.go            # Verification code storage
+│   └── InMemoryVerificationRepository.go    # In-memory OTP storage
 │
-├── model/               # Database models
-│   ├── User.go         # User entity with roles
+├── model/
+│   ├── User.go         # User entity with roles & email verification
 │   ├── Credential.go   # Password credentials
-│   ├── RefreshToken.go # Refresh token storage
+│   ├── RefreshTokens.go # Refresh token storage with rotation
 │   ├── Role.go         # Role definitions
-│   └── AuthClaims.go   # JWT claims structure
+│   ├── AuthClaims.go   # JWT claims structure
+│   └── Enums.go        # Enum types
 │
-├── dto/                # Data Transfer Objects
-│   ├── Auth.go         # Request/Response DTOs
-│   └── AuthClaims.go   # Claims DTO
+├── dto/
+│   ├── Auth.go    # Auth request/response DTOs
+│   └── Verify.go  # Verification request/response DTOs
 │
-├── util/               # Utility functions
-│   ├── env.go         # Environment variable loading
-│   ├── DButil.go      # Database initialization
-│   ├── auth_helpers.go # Password hashing & verification
-│   ├── JWT_generator.go # Token generation
-│   └── token_verify.go  # Token validation
+├── util/
+│   ├── env.go              # Environment variable loading
+│   ├── DButil.go           # Database initialization
+│   ├── Auth_helpers.go     # Password hashing & verification
+│   ├── JWT_generator.go    # Token generation (RSA-256)
+│   ├── token_verify.go     # Token validation
+│   ├── RSA.go              # RSA key management
+│   ├── OTP.go              # OTP generation
+│   ├── CronJob.go          # Cleanup jobs
+│   ├── Validator.go        # Input validation
+│   └── Error.go            # Error utilities
 │
-├── seeder/            # Database seeding
+├── seeder/
 │   └── RoleSeeder.go  # Initialize default roles
 │
-├── docs/              # Swagger documentation (auto-generated)
-│   ├── docs.go
+├── docs/
+│   ├── docs.go        # Swagger documentation
 │   ├── swagger.json
 │   └── swagger.yaml
 │
-├── config/            # Configuration files
+├── config/
+│   └── Configuration files
+│
+├── Dockerfile         # Docker image definition
+├── docker-compose.yml # Docker Compose setup
 └── LICENSE
 ```
 
 ## Authentication Flow
 
-### Token Lifecycle
+### Complete User Journey
 
-The system implements **JWT rotation with 7-day refresh cycles**:
+```
+1. REGISTER
+   POST /api/v1/auth/register
+   ├─ Create user account
+   ├─ Hash password with bcrypt
+   ├─ Assign default "user" role
+   └─ Send verification email (async)
+
+2. VERIFY EMAIL
+   POST /api/v1/auth/verify
+   ├─ Submit email + 6-digit OTP code
+   ├─ Validate code (5-minute TTL)
+   └─ Mark user as email-verified
+
+3. LOGIN
+   POST /api/v1/auth/login
+   ├─ Check credentials
+   ├─ Check if email is verified
+   ├─ If not verified: send email, return 403
+   ├─ If verified: issue tokens, return 200
+   └─ Store refresh token hash in DB
+
+4. USE ACCESS TOKEN
+   GET /api/v1/protected
+   ├─ Authorization: Bearer <access_token>
+   ├─ Server validates JWT signature
+   ├─ Extract user_id & roles from token
+   └─ Process request
+
+5. REFRESH TOKENS (every 7 days)
+   POST /api/v1/auth/refresh
+   ├─ Send refresh token cookie
+   ├─ Validate token exists & not revoked
+   ├─ Check for theft (grace period logic)
+   ├─ Issue new token pair
+   ├─ Revoke old refresh token
+   └─ Return new access token
+
+6. RESEND VERIFICATION
+   POST /api/v1/auth/resend
+   ├─ Email already registered
+   └─ Send new OTP code
+```
+
+### Token Lifecycle
 
 ```
 Day 0 - User Logs In
@@ -103,25 +168,54 @@ Day 0-7: Use Access Token for API calls
 │
 Day 7: Access Token Expires
 ├─ Client sends Refresh Token
-├─ Server validates & revokes old token
+├─ Server validates & marks old as replaced
 ├─ Issues NEW Access Token (15 min)
 ├─ Issues NEW Refresh Token (7 days)
 │
 ...Repeat every 7 days
 ```
 
-### 1. Register (`POST /api/v1/auth/register`)
+### Token Rotation with Grace Period
+
+The system implements a **10-second grace period** to handle network race conditions:
+
+```
+Normal Refresh (First time):
+├─ Send refresh token (Token A)
+├─ Server issues new pair
+├─ Mark Token A as "replaced_at" = NOW()
+├─ Return new Token B
+
+Concurrent Request (within 10 seconds):
+├─ Client retries with Token A again
+├─ Server sees "replaced_at" is set
+├─ Check: duration = NOW() - replaced_at < 10 seconds
+├─ Result: Within grace period, return Token B (safe retry)
+
+Replay Attack (after 10 seconds):
+├─ Attacker uses old Token A
+├─ Server sees duration > 10 seconds
+├─ Result: REJECTED - "refresh token reuse detected"
+└─ Account is locked for security
+```
+
+## API Endpoints
+
+### Authentication Endpoints
+
+#### 1. Register User
+**POST** `/api/v1/auth/register`
 
 **Request:**
 ```json
 {
   "name": "John Doe",
   "email": "john@example.com",
-  "password": "secure_password_123"
+  "password": "SecurePassword123!"
 }
 ```
 
-**Response:**
+**Response (201 Created):**
 ```json
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
@@ -130,434 +224,192 @@ Day 7: Access Token Expires
 }
 ```
 
-**What happens:**
-- User is created with default "user" role
-- Password is hashed using bcrypt
-- User can now log in
+**What Happens:**
+- User account is created in database
+- Password is hashed with bcrypt
+- Default "user" role is assigned
+- Verification email with OTP is sent (asynchronously)
+- User is NOT yet logged in (must verify email first)
 
 ---
 
-### 2. Login (`POST /api/v1/auth/login`)
+#### 2. Resend Verification Email
+**POST** `/api/v1/auth/resend`
+
+**Request:**
+```json
+{
+  "email": "john@example.com"
+}
+```
+
+**Response (202 Accepted):**
+```json
+{
+  "message": "verification code sent"
+}
+```
+
+**Status Codes:**
+- 202 - Email sent successfully (async)
+- 404 - User not found
+- 400 - Invalid email format
+- 500 - Failed to send email
+
+---
+
+#### 3. Verify Email with OTP
+**POST** `/api/v1/auth/verify`
 
 **Request:**
 ```json
 {
   "email": "john@example.com",
-  "password": "secure_password_123"
+  "code": "123456"
 }
 ```
 
-**Response:**
+**Response (200 OK):**
 ```json
 {
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "message": "email verified"
+}
+```
+
+**Status Codes:**
+- 200 - Email verified, account activated
+- 401 - Invalid or expired OTP code
+- 404 - User not found
+- 400 - Invalid request format
+
+**What Happens:**
+- OTP code is validated (6 digits, 5-minute TTL)
+- User's `isEmailVerified` flag is set to true
+- User can now login
+
+---
+
+#### 4. Login
+**POST** `/api/v1/auth/login`
+
+**Request:**
+```json
+{
+  "email": "john@example.com",
+  "password": "SecurePassword123!"
+}
+```
+
+**Response (200 OK) - Email Verified:**
+```json
+{
+  "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
   "refresh_token": "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
   "expires_in": 900
 }
 ```
 
-**Access Token Contains:**
-- `user_id` - UUID of the user
-- `email` - User's email
-- `roles` - Assigned roles
-- `exp` - Expiration time (15 minutes from now)
-
-**Refresh Token:**
-- Random 32-character string
-- Stored hashed in database
-- Valid for 7 days
-- Tracked with client IP & user agent
-
----
-
-### 3. Using Access Token
-
-**Protected API Call:**
-```bash
-curl -H "Authorization: Bearer <access_token>" \
-     http://localhost:4000/api/v1/profile
-```
-
-Server validates JWT without database lookup (stateless).
-
----
-
-### 4. Refresh Tokens (`POST /api/v1/auth/refresh`)
-
-**Request:**
+**Response (403 Forbidden) - Email Not Verified:**
 ```json
 {
-  "refresh_token": "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
+  "error": "email not verified",
+  "message": "verification email has been sent to your email address"
 }
 ```
 
-**Response:**
+**Headers Set:**
+```
+Set-Cookie: refresh_token=a1b2c3d4...; HttpOnly; Secure; SameSite=Strict; Path=/api/v1/auth
+```
+
+**What Happens:**
+- Credentials are validated
+- Email verification status is checked
+- If NOT verified: verification email is sent, 403 returned
+- If verified: tokens are issued, refresh token stored in HTTP-only cookie
+
+---
+
+#### 5. Refresh Tokens
+**POST** `/api/v1/auth/refresh`
+
+**Headers:**
+```
+Cookie: refresh_token=a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
+```
+
+**Response (200 OK):**
 ```json
 {
-  "access_token": "new_token_here",
+  "access_token": "new_access_token_here",
   "refresh_token": "new_refresh_token_here",
   "expires_in": 900
 }
 ```
 
+**Response (401 Unauthorized):**
+```json
+{
+  "error": "refresh token reuse detected: account locked for security"
+}
+```
+
 **Server Actions:**
--  Validates refresh token exists in database
--  Checks expiration & revocation status
--  Generates new token pair
--  **Revokes old refresh token** (rotation)
--  Tracks client context (IP, User-Agent)
+- Validates refresh token exists & not revoked
+- Checks 10-second grace period for concurrent requests
+- Detects theft/replay attacks
+- Generates new token pair
+- Marks old token as "replaced"
+- Issues new refresh token (7-day TTL)
 
 ---
 
-##  Getting Started
+#### 6. Health Check
+**GET** `/health`
 
-### Prerequisites
-
-- **Go 1.25+**
-- **PostgreSQL 16+**
-- **Git**
-
-### Installation
-
-1. **Clone the repository:**
-```bash
-git clone https://github.com/yourusername/mein-idaas.git
-cd mein-idaas
+**Response (200 OK):**
+```json
+{
+  "status": "ok"
+}
 ```
-
-2. **Install dependencies:**
-```bash
-go mod download
-```
-
-3. **Set up environment variables:**
-
-Create a `.env` file in the project root:
-
-```env
-# Database
-DB_HOST=localhost
-DB_PORT=5432
-DB_USER=postgres
-DB_PASSWORD=your_password
-DB_NAME=idaas_db
-
-# JWT
-JWT_SECRET=your_super_secret_key_min_32_chars_long
-JWT_EXPIRY_MINUTES=15
-REFRESH_TOKEN_EXPIRY_DAYS=7
-
-# Server
-SERVER_PORT=4000
-```
-
-4. **Initialize the database:**
-
-```bash
-# Connect to PostgreSQL
-psql -U postgres
-
-# Create database
-CREATE DATABASE idaas_db;
-
-# Exit psql
-\q
-```
-
-5. **Run the application:**
-
-```bash
-go run main.go
-```
-
-The server will:
-- Connect to PostgreSQL
-- Auto-migrate database schema
-- Seed default roles (admin, user)
-- Start on `http://localhost:4000`
 
 ---
 
-##  API Documentation
-
-### Swagger UI
-
-Access interactive API docs at:
-```
-http://localhost:4000/swagger/index.html
-```
-
-### Endpoints
-
-#### Authentication
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/v1/auth/register` | Register new user |
-| `POST` | `/api/v1/auth/login` | Login with credentials |
-| `POST` | `/api/v1/auth/refresh` | Refresh token pair |
-
-#### Health Check
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/health` | Server health check |
-
----
-
-##  Security Features
-
-### Password Security
-- **Bcrypt hashing** with salt rounds
-- Passwords never stored in plain text
-- Constant-time comparison prevents timing attacks
-
-### JWT Security
-- **HS256 algorithm** for token signing
-- `user_id` and `role` embedded in token for quick identification
-- Separate access and refresh token lifecycles
-- Short-lived access tokens (15 minutes)
-- Long-lived refresh tokens (7 days)
-
-### Token Rotation
-- Old refresh tokens are **automatically revoked** on rotation
-- Prevents token replay attacks
-- Client context (IP, User-Agent) is tracked
-
-### Database Security
-- Refresh tokens stored **hashed**, not plain text
-- Unique user email constraint
-- Foreign key constraints with cascade deletion
-- Soft-delete ready (via `UpdatedAt`)
-
----
-
-## 🛠️ Development
-
-### Running Tests
-
-```bash
-go test ./...
-```
-
-### Code Structure
-
-**DTOs (Data Transfer Objects)** - `dto/` folder
-- Handles JSON serialization/deserialization
-- Decouples API contracts from models
-
-**Models** - `model/` folder
-- Database entities with GORM tags
-- Relationships: User → Roles, Credentials, RefreshTokens
-
-**Repositories** - `repository/` folder
-- Interface-based for dependency injection
-- CRUD operations abstracted from business logic
-
-**Services** - `service/` folder
-- Core business logic (Register, Login, Refresh)
-- Token generation & validation
-- Role assignment
-
-**Controllers** - `controller/` folder
-- HTTP request/response handling
-- Route handlers with proper status codes
-- Swagger annotations for documentation
-
----
-
-## Token Claim Structure
+## JWT Token Structure
 
 ### Access Token Payload
 ```json
 {
-  "user_id": "550e8400-e29b-41d4-a716-446655440000",
-  "email": "john@example.com",
+  "sub": "550e8400-e29b-41d4-a716-446655440000",
   "roles": ["user"],
+  "iss": "mein-idaas",
+  "aud": ["my-game-server", "smoking-app"],
   "iat": 1703247200,
   "exp": 1703248100
 }
 ```
 
+**Fields:**
+- `sub` - Subject (user ID)
+- `roles` - User's assigned roles
+- `iss` - Issuer (mein-idaas)
+- `aud` - Audience (can be multiple services)
+- `iat` - Issued at (timestamp)
+- `exp` - Expires at (15 minutes from issue)
+
 ### Refresh Token Storage (Database)
-```json
-{
-  "id": "uuid",
-  "user_id": "550e8400-e29b-41d4-a716-446655440000",
-  "token_hash": "bcrypt_hashed_token",
-  "expires_at": "2024-12-29T12:00:00Z",
-  "revoked_at": null,
-  "client_ip": "192.168.1.1",
-  "user_agent": "Mozilla/5.0..."
-}
 ```
-
----
-
-## Refresh Token Rotation (7-Day Cycle)
-
-### Why Every 7 Days?
-
-The 7-day refresh cycle balances:
-- **Security** - Limits exposure window for stolen tokens
-- **User Experience** - Users don't need to re-login frequently
-- **Audit Trail** - Every 7 days, you see new token generation
-
-### How It Works
-
-```
-Day 0: User logs in
-├─ Issue: Access Token (15 min) + Refresh Token (7 days)
-│
-Day 3: User makes API call with old Access Token
-├─ Access Token is valid ✓
-├─ API call succeeds
-│
-Day 4: Access Token expires, user calls /refresh
-├─ Validate old Refresh Token exists & not revoked
-├─ Issue: NEW Access Token (15 min) + NEW Refresh Token (7 days)
-├─ Revoke: OLD Refresh Token (set revoked_at = NOW())
-│
-Day 7 (from original login): Can't use original Refresh Token
-├─ User must login again with credentials
-├─ NEW token cycle begins
-```
-
----
-
-## ️ Database Schema
-
-### Users Table
-```sql
-CREATE TABLE users (
-  id UUID PRIMARY KEY,
-  name VARCHAR(50) NOT NULL,
-  email VARCHAR(255) NOT NULL UNIQUE,
-  is_email_verified BOOLEAN DEFAULT false,
-  created_at TIMESTAMP,
-  updated_at TIMESTAMP
-);
-```
-
-### Credentials Table
-```sql
-CREATE TABLE credentials (
-  id UUID PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  type VARCHAR(50) NOT NULL,  -- 'password', 'totp', etc.
-  value TEXT NOT NULL,
-  created_at TIMESTAMP,
-  updated_at TIMESTAMP
-);
-```
-
-### Refresh Tokens Table
-```sql
-CREATE TABLE refresh_tokens (
-  id UUID PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  token_hash VARCHAR(255) NOT NULL,
-  expires_at TIMESTAMP NOT NULL,
-  revoked_at TIMESTAMP,  -- NULL if not revoked
-  client_ip VARCHAR(45),
-  user_agent TEXT,
-  created_at TIMESTAMP,
-  updated_at TIMESTAMP
-);
-```
-
-### Roles Table
-```sql
-CREATE TABLE roles (
-  id UUID PRIMARY KEY,
-  code VARCHAR(50) UNIQUE NOT NULL,  -- 'admin', 'user'
-  description TEXT,
-  created_at TIMESTAMP,
-  updated_at TIMESTAMP
-);
-```
-
-### User Roles Junction Table
-```sql
-CREATE TABLE user_roles (
-  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-  role_id UUID REFERENCES roles(id) ON DELETE CASCADE,
-  PRIMARY KEY (user_id, role_id)
-);
-```
-
----
-
-## Troubleshooting
-## Database Schema
-
-### Users Table
-```sql
-CREATE TABLE users (
-  id UUID PRIMARY KEY,
-  name VARCHAR(50) NOT NULL,
-  email VARCHAR(255) NOT NULL UNIQUE,
-  is_email_verified BOOLEAN DEFAULT false,
-  created_at TIMESTAMP,
-  updated_at TIMESTAMP
-);
-```
-
-### Credentials Table
-```sql
-CREATE TABLE credentials (
-  id UUID PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  type VARCHAR(50) NOT NULL,  -- 'password', 'totp', etc.
-  value TEXT NOT NULL,
-  created_at TIMESTAMP,
-  updated_at TIMESTAMP
-);
-```
-
-### Refresh Tokens Table
-```sql
-CREATE TABLE refresh_tokens (
-  id UUID PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  token_hash VARCHAR(255) NOT NULL UNIQUE,
-  expires_at TIMESTAMP NOT NULL,
-  replaced_at TIMESTAMP,        -- NULL if not yet rotated (GRACE PERIOD field)
-  replaced_by_token_id UUID,    -- Points to child token (GRACE PERIOD field)
-  revoked_at TIMESTAMP,         -- NULL if not revoked (MANUAL LOGOUT)
-  client_ip VARCHAR(45),
-  user_agent TEXT,
-  created_at TIMESTAMP
-);
-```
-
-Fields explained:
-- **token_hash** - Hash of the actual refresh token (stored securely like passwords)
-- **expires_at** - Token lifetime (7 days from creation)
-- **replaced_at** - Timestamp when this token was rotated (marks grace period start)
-- **replaced_by_token_id** - UUID of the new token that replaced this one (for grace period retry)
-- **revoked_at** - Manual revocation timestamp (used for logout)
-- **client_ip** - Client IP for audit trail
-- **user_agent** - Browser/app info for audit trail
-
-### Roles Table
-```sql
-CREATE TABLE roles (
-  id UUID PRIMARY KEY,
-  code VARCHAR(50) UNIQUE NOT NULL,  -- 'admin', 'user'
-  description TEXT,
-  created_at TIMESTAMP,
-  updated_at TIMESTAMP
-);
-```
-
-### User Roles Junction Table
-```sql
-CREATE TABLE user_roles (
-  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-  role_id UUID REFERENCES roles(id) ON DELETE CASCADE,
-  PRIMARY KEY (user_id, role_id)
-);
+id: UUID
+user_id: UUID
+token_hash: bcrypt_hashed_token
+expires_at: 2025-12-30T12:00:00Z
+replaced_at: 2025-12-25T14:30:00Z (grace period marker)
+replaced_by_token_id: UUID (points to new token)
+revoked_at: null (null = active)
+client_ip: 192.168.1.1
+user_agent: Mozilla/5.0...
+created_at: 2025-12-23T12:00:00Z
 ```
 
 ---
@@ -566,11 +418,14 @@ CREATE TABLE user_roles (
 
 ### Prerequisites
 
-- Go 1.25+
-- PostgreSQL 16+
+- Go 1.25 or higher
+- PostgreSQL 16 or higher
 - Git
+- (Optional) Docker & Docker Compose
 
 ### Installation
+
+#### Option 1: Local Setup
 
 1. Clone the repository:
 ```bash
@@ -583,51 +438,100 @@ cd mein-idaas
 go mod download
 ```
 
-3. Set up environment variables:
-
-Create a `.env` file in the project root:
+3. Create `.env` file in project root:
 
 ```env
-# Database
+# Database Configuration
 DB_HOST=localhost
 DB_PORT=5432
 DB_USER=postgres
-DB_PASSWORD=your_password
+DB_PASSWORD=your_secure_password
 DB_NAME=idaas_db
 
-# JWT
-JWT_SECRET=your_super_secret_key_min_32_chars_long
-JWT_EXPIRY_MINUTES=15
-REFRESH_TOKEN_EXPIRY_DAYS=7
+# JWT Configuration (RSA-256)
+JWT_SECRET_KEY_PATH=./private_key.pem
+JWT_PUBLIC_KEY_PATH=./public_key.pem
 
-# Server
-SERVER_PORT=4000
+# Token TTL
+JWT_ACCESS_TTL=15m
+JWT_REFRESH_TTL=168h
+
+# Grace Period for Refresh Token Rotation
+REFRESH_GRACE_PERIOD=10s
+
+# Email Configuration
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your-email@gmail.com
+SMTP_PASSWORD=your-app-password
+SMTP_FROM=noreply@mein-idaas.com
+
+# Server Configuration
+PORT=4000
+COOKIE_PATH=/api/v1/auth
 ```
 
-4. Initialize the database:
-
+4. Generate RSA keys (if not present):
 ```bash
-# Connect to PostgreSQL
+openssl genrsa -out private_key.pem 2048
+openssl rsa -in private_key.pem -pubout -out public_key.pem
+```
+
+5. Create PostgreSQL database:
+```bash
 psql -U postgres
-
-# Create database
 CREATE DATABASE idaas_db;
-
-# Exit psql
 \q
 ```
 
-5. Run the application:
-
+6. Run the application:
 ```bash
 go run main.go
 ```
 
-The server will:
-- Connect to PostgreSQL
+Server will start on `http://localhost:4000`
+
+---
+
+#### Option 2: Docker Setup
+
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/mein-idaas.git
+cd mein-idaas
+```
+
+2. Create `.env` file (as above)
+
+3. Start with Docker Compose:
+```bash
+docker-compose up -d
+```
+
+This will:
+- Start PostgreSQL container
+- Build and start Go API container
 - Auto-migrate database schema
-- Seed default roles (admin, user)
-- Start on `http://localhost:4000`
+- Seed default roles
+
+4. Access the API:
+```
+http://localhost:4000
+```
+
+---
+
+### Verify Installation
+
+Check server health:
+```bash
+curl http://localhost:4000/health
+```
+
+Expected response:
+```json
+{"status":"ok"}
+```
 
 ---
 
@@ -635,83 +539,280 @@ The server will:
 
 ### Swagger UI
 
-Access interactive API docs at:
+Access interactive API documentation:
 ```
 http://localhost:4000/swagger/index.html
 ```
 
-### Response Format
+Full OpenAPI spec:
+```
+http://localhost:4000/swagger/doc.json
+```
 
-All API responses follow a consistent format:
+---
 
-**Success Response:**
-```json
+## Database Schema
+
+### Users Table
+```sql
+CREATE TABLE users (
+  id UUID PRIMARY KEY,
+  name VARCHAR(50) NOT NULL,
+  email VARCHAR(255) NOT NULL UNIQUE,
+  is_email_verified BOOLEAN DEFAULT false,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+Fields:
+- `id` - Unique identifier (UUID v4)
+- `name` - User's display name
+- `email` - Unique email address
+- `is_email_verified` - Email verification status (false until OTP confirmed)
+- `created_at` - Account creation timestamp
+- `updated_at` - Last update timestamp
+
+---
+
+### Credentials Table
+```sql
+CREATE TABLE credentials (
+  id UUID PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type VARCHAR(50) NOT NULL,
+  value TEXT NOT NULL,
+  active BOOLEAN DEFAULT true,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(user_id, type)
+);
+```
+
+Fields:
+- `id` - Unique identifier
+- `user_id` - Reference to user
+- `type` - Credential type (currently 'password')
+- `value` - Hashed credential value (bcrypt for passwords)
+- `active` - Whether credential is active
+- Unique constraint ensures one credential per type per user
+
+---
+
+### Refresh Tokens Table
+```sql
+CREATE TABLE refresh_tokens (
+  id UUID PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash VARCHAR(255) NOT NULL UNIQUE,
+  expires_at TIMESTAMP NOT NULL,
+  replaced_at TIMESTAMP,
+  replaced_by_token_id UUID REFERENCES refresh_tokens(id),
+  revoked_at TIMESTAMP,
+  client_ip VARCHAR(45),
+  user_agent TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+Fields:
+- `id` - Token ID (UUID)
+- `user_id` - Token owner
+- `token_hash` - Bcrypt hash of the actual token (stored securely)
+- `expires_at` - Token expiration (7 days from creation)
+- `replaced_at` - When this token was rotated (marks grace period start)
+- `replaced_by_token_id` - UUID of replacement token (for grace period retry)
+- `revoked_at` - Manual revocation timestamp (null = active)
+- `client_ip` - Client IP for audit trail
+- `user_agent` - Browser/client identifier
+
+**Grace Period Logic:**
+- First use: `replaced_at` = null → Normal rotation
+- Concurrent retry (< 10s): Use old `replaced_by_token_id` → Safe
+- Replay attack (> 10s): Reject → Security locked
+
+---
+
+### Roles Table
+```sql
+CREATE TABLE roles (
+  id UUID PRIMARY KEY,
+  code VARCHAR(50) UNIQUE NOT NULL,
+  description TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+Default roles seeded:
+- `admin` - Full system access
+- `user` - Standard user role (default for new registrations)
+
+---
+
+### User Roles Junction Table
+```sql
+CREATE TABLE user_roles (
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  role_id UUID REFERENCES roles(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, role_id)
+);
+```
+
+Many-to-many relationship between users and roles.
+
+---
+
+### Verification Codes (In-Memory)
+```
+Structure: Map[userID]VerificationCode
 {
-  "access_token": "eyJhbGc...",
-  "refresh_token": "a1b2c3d4...",
-  "expires_in": 900
+  code: "123456" (6 digits)
+  created_at: timestamp
+  expires_at: timestamp (5 minutes from creation)
 }
 ```
 
-**Error Response:**
-```json
-{
-  "error": "invalid credentials"
-}
-```
+Note: Uses in-memory storage with automatic cleanup. For production, consider Redis or database persistence.
 
 ---
 
 ## Security Features
 
 ### Password Security
-- Bcrypt hashing with salt rounds
+- Bcrypt hashing with configurable salt rounds (default: 10)
 - Passwords never stored in plain text
 - Constant-time comparison prevents timing attacks
 
 ### JWT Security
-- HS256 algorithm for token signing
-- `user_id` and `roles` embedded in token for quick identification
+- RSA-256 asymmetric signing (public/private key pair)
+- `sub` (subject) contains user ID
+- `roles` included for quick authorization checks
 - Separate access and refresh token lifecycles
 - Short-lived access tokens (15 minutes)
 - Long-lived refresh tokens (7 days)
 
+### Email Verification
+- 6-digit OTP codes (randomly generated)
+- 5-minute expiration per code
+- Automatic code cleanup
+- Email sent asynchronously (non-blocking)
+
 ### Token Rotation & Grace Period
-- Old refresh tokens automatically marked as replaced on rotation
-- Graceful window (10 seconds) for network retry safety
+- Old refresh tokens marked as "replaced" on rotation
+- 10-second grace period for network retry safety
 - Theft detection after grace period expires
 - Account lockdown on suspicious reuse
 - Prevents token replay attacks
 
 ### Database Security
-- Refresh tokens stored hashed, not plain text
-- Unique user email constraint
+- Refresh tokens stored hashed (bcrypt), not plain text
+- Unique email constraint prevents duplicate accounts
 - Foreign key constraints with cascade deletion
 - Token audit trail (IP, User-Agent, timestamps)
+- Automatic cleanup of expired tokens (daily cron)
+
+### HTTP Security
+- Refresh tokens stored in HTTP-only cookies
+- Secure flag set (HTTPS only in production)
+- SameSite=Strict prevents CSRF attacks
+- Access token in response body for client-side use
+
+---
+
+## Configuration
+
+### Environment Variables
+
+```env
+# Database
+DB_HOST              # PostgreSQL host (default: localhost)
+DB_PORT              # PostgreSQL port (default: 5432)
+DB_USER              # PostgreSQL user
+DB_PASSWORD          # PostgreSQL password
+DB_NAME              # Database name
+
+# JWT / RSA Keys
+JWT_SECRET_KEY_PATH  # Path to private_key.pem
+JWT_PUBLIC_KEY_PATH  # Path to public_key.pem
+
+# Token Lifetimes
+JWT_ACCESS_TTL       # Access token TTL (default: 15m)
+JWT_REFRESH_TTL      # Refresh token TTL (default: 168h = 7 days)
+
+# Grace Period
+REFRESH_GRACE_PERIOD # Grace window for token rotation (default: 10s)
+
+# Email / SMTP
+SMTP_HOST            # SMTP server host
+SMTP_PORT            # SMTP server port
+SMTP_USER            # SMTP username
+SMTP_PASSWORD        # SMTP password (app password for Gmail)
+SMTP_FROM            # From email address
+
+# Server
+PORT                 # Server port (default: 4000)
+COOKIE_PATH          # Cookie path (default: /api/v1/auth)
+```
+
+---
+
+## HTTP Status Codes
+
+| Code | Status | Scenario |
+|------|--------|----------|
+| 200 | OK | Login/Refresh successful, verification email sent |
+| 201 | Created | User registered successfully |
+| 202 | Accepted | Verification email accepted for sending (async) |
+| 400 | Bad Request | Invalid request format or validation error |
+| 401 | Unauthorized | Invalid credentials, expired token, or token replay detected |
+| 403 | Forbidden | Email not verified - can't login yet |
+| 404 | Not Found | User or resource not found |
+| 500 | Server Error | Database error or internal server error |
 
 ---
 
 ## Troubleshooting
 
-### "invalid or unknown refresh token"
-- Cause: Token doesn't exist in database
-- Solution: Ensure tokens are persisted after login
+### "email not verified"
+- **Cause:** User tried to login without verifying email first
+- **Solution:** User needs to submit 6-digit OTP via `/auth/verify` endpoint
+- **How to resend:** POST `/auth/resend` with email address
 
-### "refresh token reuse detected: account locked"
-- Cause: Token was reused after 10-second grace period ended
-- Solution: Security mechanism working as intended. User must re-login.
+### "refresh token reuse detected: account locked for security"
+- **Cause:** Token was reused after 10-second grace period ended
+- **Solution:** This is a security feature. User must login again with credentials
+- **What happened:** Possible token theft detected
 
-### "refresh token expired or revoked"
-- Cause: Token exceeded 7-day lifetime or was manually revoked
-- Solution: User needs to login again with credentials
+### "invalid or expired verification code"
+- **Cause:** OTP code is wrong or older than 5 minutes
+- **Solution:** Request new code via `/auth/resend` endpoint
 
-### Swagger not loading
-- Cause: Swagger docs not generated
-- Solution: Run `swag init` in project root
+### "email already in use"
+- **Cause:** Another account with same email exists
+- **Solution:** Use different email or request password reset (future feature)
+
+### "invalid credentials"
+- **Cause:** Email doesn't exist or password is wrong
+- **Solution:** Check email spelling or use `/auth/register` to create account
 
 ### Database connection errors
-- Cause: PostgreSQL not running or credentials incorrect
-- Solution: Verify `.env` file has correct DB connection string
+- **Cause:** PostgreSQL not running or connection string wrong
+- **Solution:** Verify database is running and `.env` file has correct credentials
+- **Check:** `psql -h localhost -U postgres -d idaas_db`
+
+### Swagger not loading
+- **Cause:** Swagger docs not generated
+- **Solution:** Run `swag init` in project root
+- **Or:** Restart server - docs auto-generate on startup
+
+### RSA keys not found
+- **Cause:** `private_key.pem` and `public_key.pem` missing
+- **Solution:** Generate with:
+```bash
+openssl genrsa -out private_key.pem 2048
+openssl rsa -in private_key.pem -pubout -out public_key.pem
+```
 
 ---
 
@@ -719,41 +820,89 @@ All API responses follow a consistent format:
 
 | Package | Purpose |
 |---------|---------|
-| `gofiber/fiber` | Ultra-fast HTTP framework |
-| `golang-jwt/jwt` | JWT signing & verification |
+| `gofiber/fiber/v2` | Ultra-fast HTTP framework |
+| `golang-jwt/jwt/v5` | JWT signing & verification |
 | `gorm.io/gorm` | ORM for database operations |
-| `gorm.io/driver/postgres` | PostgreSQL driver |
-| `golang.org/x/crypto` | Password hashing (bcrypt) |
-| `google/uuid` | UUID generation |
+| `gorm.io/driver/postgres` | PostgreSQL driver for GORM |
+| `golang.org/x/crypto` | Bcrypt password hashing |
+| `google/uuid` | UUID v4 generation |
 | `gofiber/swagger` | Swagger UI integration |
 | `swaggo/swag` | Swagger documentation generation |
+| `joho/godotenv` | .env file loading |
+| `gomail.v2` | Email sending (SMTP) |
 
 ---
 
-## HTTP Status Codes
+## Development
 
-| Code | Scenario |
-|------|----------|
-| 201 | User registered successfully |
-| 200 | Login or refresh token successful |
-| 400 | Invalid request payload or validation error |
-| 401 | Invalid credentials, expired token, or account locked |
-| 500 | Server error |
+### Running Tests
+
+```bash
+go test ./...
+```
+
+### Generating Swagger Docs
+
+```bash
+swag init
+```
+
+This generates/updates:
+- `docs/docs.go`
+- `docs/swagger.json`
+- `docs/swagger.yaml`
+
+### Code Structure Explained
+
+**Controllers** - `controller/` folder
+- HTTP request/response handling
+- Status code and error responses
+- Swagger annotations for documentation
+
+**Services** - `service/` folder
+- Business logic and workflows
+- Orchestrates repositories and utilities
+- Handles token generation, email sending, etc.
+
+**Repositories** - `repository/` folder
+- Interface-based for dependency injection
+- CRUD operations abstracted
+- Database query logic isolated
+
+**DTOs** - `dto/` folder
+- Data Transfer Objects
+- Request/response serialization
+- Decouples API contracts from models
+
+**Models** - `model/` folder
+- Database entities with GORM tags
+- Relationships: User → Roles, Credentials, RefreshTokens
+- Enums for credential types
+
+**Utilities** - `util/` folder
+- Reusable helper functions
+- JWT generation and validation
+- Password hashing and OTP generation
+- Database initialization
+- Environment variable loading
 
 ---
 
 ## Future Enhancements
 
-- Email verification flow
-- Multi-factor authentication (MFA)
-- OAuth2/OIDC provider mode
-- Permission-based authorization (beyond roles)
-- Audit logging & compliance
-- Session management & device tracking
-- Rate limiting per user/IP
-- HTTPS/TLS enforcement
-- Token introspection endpoint
-- Token revocation list
+- [ ] Multi-factor authentication (MFA) with TOTP
+- [ ] OAuth2/OIDC provider mode
+- [ ] Permission-based authorization (beyond roles)
+- [ ] Password reset flow
+- [ ] Account lockout after failed attempts
+- [ ] Audit logging and compliance tracking
+- [ ] Session management and device tracking
+- [ ] Redis caching for OTP and sessions
+- [ ] Rate limiting per user/IP
+- [ ] HTTPS/TLS enforcement
+- [ ] Token introspection endpoint
+- [ ] User profile management
+- [ ] Admin dashboard
 
 ---
 
@@ -766,6 +915,7 @@ MIT License - See LICENSE file for details
 ## Contributing
 
 Contributions are welcome! Please:
+
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
 3. Commit your changes (`git commit -m 'Add amazing feature'`)
@@ -781,84 +931,4 @@ For issues, questions, or suggestions, please open an issue on GitHub.
 ---
 
 Built with simplicity and control in mind for developers who want to own their authentication infrastructure.
-### "invalid or unknown refresh token"
-- **Cause:** Token doesn't exist in database or was never stored
-- **Solution:** Ensure refresh tokens are being persisted in the database after login
 
-### "refresh token expired or revoked"
-- **Cause:** Token has been revoked or exceeded 7-day expiry
-- **Solution:** User needs to login again with credentials
-
-### Swagger not loading
-- **Cause:** Swagger docs not generated
-- **Solution:** Ensure `docs/` folder exists and `swag init` has been run
-
-### Database connection errors
-- **Cause:** PostgreSQL not running or credentials incorrect
-- **Solution:** Verify DB connection string in environment variables
-
----
-
-## Dependencies
-
-| Package | Purpose |
-|---------|---------|
-| `gofiber/fiber` | Ultra-fast HTTP framework |
-| `golang-jwt/jwt` | JWT signing & verification |
-| `gorm.io/gorm` | ORM for database operations |
-| `gorm.io/driver/postgres` | PostgreSQL driver |
-| `golang.org/x/crypto` | Password hashing (bcrypt) |
-| `google/uuid` | UUID generation |
-| `gofiber/swagger` | Swagger UI integration |
-| `swaggo/swag` | Swagger documentation generation |
-
----
-
-## Status Codes
-
-| Code | Meaning |
-|------|---------|
-| `201` | User created successfully |
-| `200` | Login/Refresh successful |
-| `400` | Invalid request payload |
-| `401` | Invalid credentials or expired token |
-| `500` | Internal server error |
-
----
-
-## Future Enhancements
-
-- [ ] Email verification
-- [ ] Multi-factor authentication (MFA)
-- [ ] OAuth2/OIDC provider mode
-- [ ] Permission-based authorization
-- [ ] Audit logging
-- [ ] Session management
-- [ ] Rate limiting
-- [ ] HTTPS/TLS enforcement
-
----
-
-## License
-
-
----
-
-## Contributing
-
-Contributions are welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Submit a pull request
-
----
-
-##  Support
-
-For issues, questions, or suggestions, please open an issue on GitHub.
-
----
-
-**Built with hate for developers who value simplicity and control.**

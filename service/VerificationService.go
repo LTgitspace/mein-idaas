@@ -1,6 +1,9 @@
 package service
 
 import (
+	"errors"
+	"log"
+
 	"mein-idaas/repository"
 	"mein-idaas/util"
 	"time"
@@ -33,8 +36,11 @@ func (s *VerificationService) SendVerificationCode(userID string, email string) 
 
 	// 3. Send Email (Run in background so API is fast)
 	go func() {
-		_ = s.emailService.SendOTP(email, code)
-		// in production, you might want to log the error here if it fails
+		if err := s.emailService.SendOTP(email, code); err != nil {
+			log.Printf("Failed to send OTP to %s: %v", email, err)
+			return
+		}
+		log.Printf("OTP sent successfully to %s", email)
 	}()
 
 	return nil
@@ -51,7 +57,7 @@ func (s *VerificationService) VerifyCode(userID string, inputCode string) error 
 	// 2. Compare
 	if savedCode != inputCode {
 		// optional: decrease retry count here to prevent brute force
-		return err // or generic "invalid code"
+		return errors.New("invalid verification code")
 	}
 
 	// 3. Cleanup (Prevent replay attacks)

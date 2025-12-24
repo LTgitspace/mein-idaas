@@ -1,8 +1,7 @@
 package controller
 
 import (
-	"os"
-	"time"
+	"log"
 
 	"mein-idaas/dto"
 	"mein-idaas/service"
@@ -25,7 +24,7 @@ func NewVerificationController(authSvc *service.AuthService, verificationSvc *se
 
 // VerifyEmail godoc
 // @Summary      Verify email with OTP
-// @Description  Verifies the 6-digit code sent to email. If successful, activates account and logs user in (returns tokens).
+// @Description  Verifies the 6-digit code sent to email. If successful, activates account (sets isEmailVerified=true).
 // @Tags         verification
 // @Accept       json
 // @Produce      json
@@ -33,6 +32,7 @@ func NewVerificationController(authSvc *service.AuthService, verificationSvc *se
 // @Success      200  {object}  map[string]interface{}
 // @Failure      400  {object}  map[string]string
 // @Failure      401  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
 // @Router       /auth/verify [post]
 func (vc *VerificationController) VerifyEmail(c *fiber.Ctx) error {
 	// 1. Parse DTO
@@ -57,63 +57,49 @@ func (vc *VerificationController) VerifyEmail(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid or expired verification code"})
 	}
 
-	// 5. Generate tokens
-	clientIP := c.IP()
-	userAgent := c.Get("User-Agent")
+	// 5. Mark user as verified
+	if err := vc.authSvc.MarkEmailVerified(user.ID.String()); err != nil {
+		log.Printf("Failed to mark email verified for %s: %v", req.Email, err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to update user verification status"})
+	}
+	log.Printf("Email verified for %s (user_id=%s)", req.Email, user.ID.String())
 
-	// Extract Roles for Token
-	var roleCodes []string
-	for _, r := range user.Roles {
-		roleCodes = append(roleCodes, r.Code)
+	// 6. Return success (token generation and storage removed)
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "email verified"})
+}
+
+// ResendVerificationCode godoc
+// @Summary      Resend verification code to email
+// @Description  Generates and sends a new verification code to the specified email if the user exists.
+// @Tags         verification
+// @Accept       json
+// @Produce      json
+// @Param        payload body dto.ResendOTPRequest true "Resend payload"
+// @Success      202  {object}  map[string]string
+// @Failure      400  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /auth/resend [post]
+func (vc *VerificationController) ResendVerificationCode(c *fiber.Ctx) error {
+	var req dto.ResendOTPRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request payload"})
 	}
 
-	// Generate Tokens with Roles
-	pair, err := util.GenerateTokens(user.ID, roleCodes)
+	if err := util.ValidateStruct(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	user, err := vc.authSvc.GetUserByEmail(req.Email)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to generate tokens"})
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
 	}
 
-	// Store refresh token in DB
-	hash := util.HashToken(pair.RefreshToken)
-
-	// Get refresh TTL from env (default 168h = 7 days)
-	refreshTTLStr := os.Getenv("JWT_REFRESH_TTL")
-	if refreshTTLStr == "" {
-		refreshTTLStr = "168h"
-	}
-	refreshTTL, _ := time.ParseDuration(refreshTTLStr)
-
-	if err := vc.authSvc.StoreRefreshToken(pair.RefreshID.String(), user.ID, hash, refreshTTL, clientIP, userAgent); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to store refresh token"})
+	if err := vc.verificationSvc.SendVerificationCode(user.ID.String(), user.Email); err != nil {
+		log.Printf("Failed to initiate verification email for %s: %v", req.Email, err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to send verification code"})
 	}
 
-	// 6. Set Cookie
-	cookiePath := os.Getenv("COOKIE_PATH")
-	if cookiePath == "" {
-		cookiePath = "/api/v1/auth"
-	}
-
-	c.Cookie(&fiber.Cookie{
-		Name:     "refresh_token",
-		Value:    pair.RefreshToken,
-		Expires:  time.Now().Add(refreshTTL),
-		HTTPOnly: true,
-		Secure:   true,
-		SameSite: "Strict",
-		Path:     cookiePath,
-	})
-
-	// 7. Get access token TTL in seconds for response
-	accessTTLStr := os.Getenv("JWT_ACCESS_TTL")
-	if accessTTLStr == "" {
-		accessTTLStr = "15m"
-	}
-	accessTTL, _ := time.ParseDuration(accessTTLStr)
-	expiresIn := int(accessTTL.Seconds())
-
-	// 8. Return Access Token
-	return c.Status(fiber.StatusOK).JSON(fiber.Map{
-		"access_token": pair.AccessToken,
-		"expires_in":   expiresIn,
-	})
+	log.Printf("Verification code send initiated for %s", req.Email)
+	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"message": "verification code sent"})
 }
