@@ -14,6 +14,7 @@
 /dist/
 /out/
 /build/
+*.exe
 
 # --- Go Modules & Workspace ---
 # Go workspace file (Go 1.18+) - generally local only

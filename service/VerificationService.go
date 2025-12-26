@@ -46,6 +46,29 @@ func (s *VerificationService) SendVerificationCode(userID string, email string) 
 	return nil
 }
 
+func (s *VerificationService) SendPasswordChangeCode(userID string, email string) error {
+	// 1. Generate 6-digit Code
+	code := util.GenerateRandomDigits(6)
+
+	// 2. Save to Repository (TTL 5 minutes)
+	// We use userID as key so one user can't spam multiple codes easily
+	err := s.repo.Save(userID, code, 5*time.Minute)
+	if err != nil {
+		return err
+	}
+
+	// 3. Send Email (Run in background so API is fast)
+	go func() {
+		if err := s.emailService.SendPasswordOTP(email, code); err != nil {
+			log.Printf("Failed to send OTP to %s: %v", email, err)
+			return
+		}
+		log.Printf("OTP change password sent successfully to %s", email)
+	}()
+
+	return nil
+}
+
 // VerifyCode checks if the code is correct
 func (s *VerificationService) VerifyCode(userID string, inputCode string) error {
 	// 1. Get from Repo

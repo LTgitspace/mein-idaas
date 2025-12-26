@@ -63,3 +63,32 @@ func (s *EmailService) SendOTP(toEmail string, code string) error {
 	}
 	return nil
 }
+
+// SendPasswordOTP sends the 6-digit code to the user
+func (s *EmailService) SendPasswordOTP(toEmail string, code string) error {
+	m := gomail.NewMessage()
+
+	// Set Headers
+	// Example: "Mein IDaaS <support@mein-idaas.com>"
+	m.SetHeader("From", fmt.Sprintf("%s <%s>", s.sender, s.dialer.Username))
+	m.SetHeader("To", toEmail)
+	m.SetHeader("Subject", "Your Verification Code")
+
+	// Set Body (HTML)
+	body := fmt.Sprintf(`
+		<div style="font-family: Arial, sans-serif; padding: 20px;">
+			<h2>Hello!</h2>
+			<p>Your password change OTP code is:</p>
+			<h1 style="color: #2d89ef; letter-spacing: 5px;">%s</h1>
+			<p>This code will expire in 5 minutes.</p>
+			<p>If you did not request this, please contact administration team immediately!</p>
+		</div>
+	`, code)
+	m.SetBody("text/html", body)
+
+	// Send
+	if err := s.dialer.DialAndSend(m); err != nil {
+		return err
+	}
+	return nil
+}

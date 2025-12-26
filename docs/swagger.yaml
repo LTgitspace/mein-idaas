@@ -10,6 +10,37 @@ definitions:
     - email
     - password
     type: object
+  dto.PasswordChangeRequest:
+    properties:
+      new_password:
+        maxLength: 72
+        minLength: 8
+        type: string
+      old_password:
+        maxLength: 72
+        minLength: 8
+        type: string
+      otp_code:
+        type: string
+    required:
+    - new_password
+    - old_password
+    - otp_code
+    type: object
+  dto.PasswordChangeResponse:
+    properties:
+      email:
+        type: string
+      message:
+        type: string
+    type: object
+  dto.PasswordChangeSendOTPResponse:
+    properties:
+      email:
+        type: string
+      message:
+        type: string
+    type: object
   dto.RegisterRequest:
     properties:
       email:
@@ -73,7 +104,8 @@ paths:
       consumes:
       - application/json
       description: Validates credentials, returns Access Token in JSON, and sets Refresh
-        Token in HttpOnly Cookie.
+        Token in HttpOnly Cookie. If email is not verified, sends verification email
+        and returns 403.
       parameters:
       - description: Login payload
         in: body
@@ -105,6 +137,12 @@ paths:
             additionalProperties:
               type: string
             type: object
+        "403":
+          description: Email not verified - verification email sent
+          schema:
+            additionalProperties:
+              type: string
+            type: object
         "500":
           description: Internal Server Error
           schema:
@@ -112,6 +150,99 @@ paths:
               type: string
             type: object
       summary: Login with email and password
+      tags:
+      - auth
+  /auth/password-change:
+    post:
+      consumes:
+      - application/json
+      description: Changes the user's password. Requires old password, new password,
+        and OTP code. User ID is read from JWT access token header.
+      parameters:
+      - description: Bearer <access_token>
+        in: header
+        name: Authorization
+        required: true
+        type: string
+      - description: Password change payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/dto.PasswordChangeRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.PasswordChangeResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Change password with OTP verification
+      tags:
+      - auth
+  /auth/password-change/send-otp:
+    post:
+      consumes:
+      - application/json
+      description: Sends a 6-digit OTP code to the authenticated user's email for
+        password change verification. Requires valid access token in Authorization
+        header.
+      parameters:
+      - description: Bearer <access_token>
+        in: header
+        name: Authorization
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.PasswordChangeSendOTPResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Send OTP for password change
       tags:
       - auth
   /auth/refresh:

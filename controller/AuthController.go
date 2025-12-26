@@ -6,6 +6,7 @@ import (
 
 	"mein-idaas/dto"
 	"mein-idaas/service"
+	"mein-idaas/util"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -178,5 +179,111 @@ func (ac *AuthController) Refresh(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
 		"access_token": res.AccessToken,
 		"expires_in":   res.ExpiresIn,
+	})
+}
+
+// SendPasswordChangeOTP godoc
+// @Summary      Send OTP for password change
+// @Description  Sends a 6-digit OTP code to the authenticated user's email for password change verification. Requires valid access token in Authorization header.
+// @Tags         auth
+// @Accept       json
+// @Produce      json
+// @Param        Authorization header string true "Bearer <access_token>"
+// @Success      200  {object}  dto.PasswordChangeSendOTPResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      401  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /auth/password-change/send-otp [post]
+func (ac *AuthController) SendPasswordChangeOTP(c *fiber.Ctx) error {
+	// 1. Extract user ID from Authorization header (JWT token)
+	authHeader := c.Get("Authorization")
+	if authHeader == "" {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing authorization header"})
+	}
+
+	// Parse Bearer token to get user ID
+	userID, err := util.ExtractUserIDFromToken(authHeader)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid or expired token"})
+	}
+
+	// 2. Send OTP using user ID
+	userEmail, err := ac.svc.SendPasswordChangeOTPByUserID(userID)
+	if err != nil {
+		if err.Error() == "user not found" {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(dto.PasswordChangeSendOTPResponse{
+		Message: "OTP sent to your email",
+		Email:   userEmail,
+	})
+}
+
+// ChangePassword godoc
+// @Summary      Change password with OTP verification
+// @Description  Changes the user's password. Requires old password, new password, and OTP code. User ID is read from JWT access token header.
+// @Tags         auth
+// @Accept       json
+// @Produce      json
+// @Param        Authorization header string true "Bearer <access_token>"
+// @Param        payload body dto.PasswordChangeRequest true "Password change payload"
+// @Success      200  {object}  dto.PasswordChangeResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      401  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /auth/password-change [post]
+func (ac *AuthController) ChangePassword(c *fiber.Ctx) error {
+	// 1. Extract user ID from Authorization header (JWT token)
+	authHeader := c.Get("Authorization")
+	if authHeader == "" {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing authorization header"})
+	}
+
+	// Parse Bearer token
+	userID, err := util.ExtractUserIDFromToken(authHeader)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid or expired token"})
+	}
+
+	// 2. Parse request body
+	var req dto.PasswordChangeRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request payload"})
+	}
+
+	// 3. Validate request
+	if err := util.ValidateStruct(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// 4. Check if old and new passwords are the same
+	if req.OldPassword == req.NewPassword {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "new password must be different from old password"})
+	}
+
+	// 5. Call service to change password
+	if err := ac.svc.ChangePassword(userID, req.OldPassword, req.NewPassword, req.OTPCode); err != nil {
+		if err.Error() == "invalid old password" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid old password"})
+		}
+		if err.Error() == "invalid verification code" || err.Error() == "code expired" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// Get user to return email
+	user, err := ac.svc.GetUserByID(userID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to fetch user"})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(dto.PasswordChangeResponse{
+		Message: "password changed successfully",
+		Email:   user.Email,
 	})
 }

@@ -34,3 +34,27 @@ type RefreshResponse struct {
 	RefreshToken string `json:"refresh_token"`
 	ExpiresIn    int    `json:"expires_in"`
 }
+
+// PasswordChangeSendOTPRequest for initiating password change with OTP
+type PasswordChangeSendOTPRequest struct {
+	Email string `json:"email" validate:"required,email"`
+}
+
+// PasswordChangeSendOTPResponse confirms OTP was sent
+type PasswordChangeSendOTPResponse struct {
+	Message string `json:"message"`
+	Email   string `json:"email"`
+}
+
+// PasswordChangeRequest for completing password change with OTP verification
+type PasswordChangeRequest struct {
+	OldPassword string `json:"old_password" validate:"required,min=8,max=72"`
+	NewPassword string `json:"new_password" validate:"required,min=8,max=72"`
+	OTPCode     string `json:"otp_code" validate:"required,len=6"`
+}
+
+// PasswordChangeResponse for successful password change
+type PasswordChangeResponse struct {
+	Message string `json:"message"`
+	Email   string `json:"email"`
+}

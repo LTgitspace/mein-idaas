@@ -410,3 +410,104 @@ func (s *AuthService) MarkEmailVerified(userID string) error {
 	}
 	return nil
 }
+
+// SendPasswordChangeOTP sends an OTP to the user's email for password change
+func (s *AuthService) SendPasswordChangeOTP(email string) error {
+	user, err := s.userRepo.GetByEmail(email)
+	if err != nil {
+		return errors.New("user not found")
+	}
+
+	// Send OTP via verification service
+	if s.verificationSvc != nil {
+		if err := s.verificationSvc.SendVerificationCode(user.ID.String(), user.Email); err != nil {
+			log.Printf("failed to send password change OTP to %s: %v", user.Email, err)
+			return err
+		}
+		log.Printf("password change OTP sent successfully to %s", user.Email)
+		return nil
+	}
+	return errors.New("verification service not configured")
+}
+
+// SendPasswordChangeOTPByUserID sends an OTP to the user's email using their user ID
+func (s *AuthService) SendPasswordChangeOTPByUserID(userID string) (string, error) {
+	// 1. Parse userID
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return "", errors.New("invalid user ID format")
+	}
+
+	// 2. Get user by ID
+	user, err := s.userRepo.GetByID(uid)
+	if err != nil {
+		return "", errors.New("user not found")
+	}
+
+	// 3. Send OTP via verification service
+	if s.verificationSvc != nil {
+		if err := s.verificationSvc.SendPasswordChangeCode(user.ID.String(), user.Email); err != nil {
+			log.Printf("failed to send password change OTP to %s: %v", user.Email, err)
+			return "", err
+		}
+		log.Printf("password change OTP sent successfully to %s", user.Email)
+		return user.Email, nil
+	}
+	return "", errors.New("verification service not configured")
+}
+
+// ChangePassword changes the user's password after OTP verification
+func (s *AuthService) ChangePassword(userID string, oldPassword string, newPassword string, otpCode string) error {
+	// 1. Parse userID
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return errors.New("invalid user ID format")
+	}
+
+	// 2. Verify OTP
+	if s.verificationSvc != nil {
+		if err := s.verificationSvc.VerifyCode(userID, otpCode); err != nil {
+			return err
+		}
+	} else {
+		return errors.New("verification service not configured")
+	}
+
+	// 3. Get user with credentials
+	user, err := s.userRepo.GetByID(uid)
+	if err != nil {
+		return err
+	}
+
+	// 4. Find existing password credential
+	var pwCred *model.Credential
+	for i, c := range user.Credentials {
+		if c.Type == model.CredTypePassword {
+			pwCred = &user.Credentials[i]
+			break
+		}
+	}
+	if pwCred == nil {
+		return errors.New("password credential not found")
+	}
+
+	// 5. Verify old password
+	if err := util.ComparePassword(pwCred.Value, oldPassword); err != nil {
+		return errors.New("invalid old password")
+	}
+
+	// 6. Hash new password
+	hashedNewPassword, err := util.HashPassword(newPassword)
+	if err != nil {
+		return err
+	}
+
+	// 7. Update credential
+	pwCred.Value = hashedNewPassword
+	if err := s.credentialRepo.Update(pwCred); err != nil {
+		return err
+	}
+
+	log.Printf("password changed successfully for user %s", user.Email)
+	return nil
+}

@@ -85,6 +85,10 @@ func setupRoutes(app *fiber.App, userRepo repository.UserRepository, credentialR
 	auth.Post("/login", authController.Login)
 	auth.Post("/refresh", authController.Refresh)
 
+	// password change endpoints
+	auth.Post("/password-change/send-otp", authController.SendPasswordChangeOTP)
+	auth.Post("/password-change", authController.ChangePassword)
+
 	// verification endpoints
 	auth.Post("/verify", verifyController.VerifyEmail)
 	auth.Post("/resend", verifyController.ResendVerificationCode)

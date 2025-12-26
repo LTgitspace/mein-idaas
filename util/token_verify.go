@@ -2,6 +2,9 @@ package util
 
 import (
 	"errors"
+	"fmt"
+	"log"
+	"strings"
 
 	"mein-idaas/dto"
 
@@ -21,10 +24,17 @@ func ParseAccessToken(tokenString string) (*dto.AuthClaims, error) {
 		return GetPublicKey(), nil
 	})
 
-	if err != nil || !token.Valid {
-		return nil, errors.New("invalid or expired access token")
+	if err != nil {
+		log.Printf("Token parsing error: %v", err)
+		return nil, fmt.Errorf("token parsing failed: %w", err)
 	}
 
+	if !token.Valid {
+		log.Printf("Token is invalid. Claims: %+v", claims)
+		return nil, errors.New("token signature verification failed")
+	}
+
+	log.Printf("Token parsed successfully. Subject: %s, Roles: %v", claims.Subject, claims.Roles)
 	return claims, nil
 }
 
@@ -66,4 +76,31 @@ func ParseRefreshToken(tokenString string) (uuid.UUID, uuid.UUID, error) {
 	}
 
 	return userID, refreshID, nil
+}
+
+// ExtractUserIDFromToken extracts the user ID from an access token in the Authorization header
+// Accepts both "Bearer <token>" and raw token formats
+func ExtractUserIDFromToken(authHeader string) (string, error) {
+	tokenString := authHeader
+
+	// If the header contains "Bearer " prefix, remove it
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		tokenString = strings.TrimPrefix(authHeader, "Bearer ")
+	}
+
+	if tokenString == "" {
+		return "", fmt.Errorf("empty token")
+	}
+
+	// Parse the access token
+	claims, err := ParseAccessToken(tokenString)
+	if err != nil {
+		return "", err
+	}
+
+	if claims.Subject == "" {
+		return "", errors.New("missing user ID in token")
+	}
+
+	return claims.Subject, nil
 }
