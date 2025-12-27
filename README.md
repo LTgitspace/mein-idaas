@@ -593,7 +593,7 @@ Fields:
 - `id` - Unique identifier
 - `user_id` - Reference to user
 - `type` - Credential type (currently 'password')
-- `value` - Hashed credential value (bcrypt for passwords)
+- `value` - Hashed credential value (Argon2id for passwords)
 - `active` - Whether credential is active
 - Unique constraint ensures one credential per type per user
 
@@ -931,4 +931,3 @@ For issues, questions, or suggestions, please open an issue on GitHub.
 ---
 
 Built with simplicity and control in mind for developers who want to own their authentication infrastructure.
-
