@@ -88,3 +88,13 @@ func (s *VerificationService) VerifyCode(userID string, inputCode string) error 
 
 	return nil
 }
+
+// StoreCode stores a verification code with a custom TTL
+func (s *VerificationService) StoreCode(key string, code string, ttl time.Duration) error {
+	return s.repo.Save(key, code, ttl)
+}
+
+// DeleteCode removes a verification code from storage
+func (s *VerificationService) DeleteCode(key string) error {
+	return s.repo.Delete(key)
+}

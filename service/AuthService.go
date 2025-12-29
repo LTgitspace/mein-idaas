@@ -511,3 +511,100 @@ func (s *AuthService) ChangePassword(userID string, oldPassword string, newPassw
 	log.Printf("password changed successfully for user %s", user.Email)
 	return nil
 }
+
+// SendForgotPasswordOTP sends a 6-digit OTP code to the user's email for password reset
+// If email doesn't exist, silently logs and returns no error (for security)
+func (s *AuthService) SendForgotPasswordOTP(email string, emailSvc *EmailService) error {
+	user, err := s.userRepo.GetByEmail(email)
+	if err != nil {
+		// Silently log that email was not found - security best practice
+		log.Printf("password reset request for non-existent email: %s", email)
+		return nil // Return success to prevent email enumeration
+	}
+
+	// Generate 6-digit OTP code
+	otpCode := util.GenerateRandomDigits(6)
+
+	// Send OTP via email
+	if err := emailSvc.SendForgotPasswordOTP(user.Email, otpCode); err != nil {
+		log.Printf("failed to send password reset OTP to %s: %v", user.Email, err)
+		return err
+	}
+
+	// Store OTP with 5-minute TTL using verification service
+	if s.verificationSvc != nil {
+		resetKey := "forgot_password:" + user.ID.String()
+		if err := s.verificationSvc.StoreCode(resetKey, otpCode, 5*time.Minute); err != nil {
+			log.Printf("failed to store password reset OTP for %s: %v", user.Email, err)
+			return err
+		}
+	}
+
+	log.Printf("password reset OTP sent successfully to %s", user.Email)
+	return nil
+}
+
+// ResetPasswordWithOTP validates the OTP and resets the password with a temporary password
+func (s *AuthService) ResetPasswordWithOTP(email string, otpCode string, emailSvc *EmailService) error {
+	// 1. Get user by email
+	user, err := s.userRepo.GetByEmail(email)
+	if err != nil {
+		return errors.New("user not found")
+	}
+
+	// 2. Verify OTP code
+	if s.verificationSvc != nil {
+		resetKey := "forgot_password:" + user.ID.String()
+		if err := s.verificationSvc.VerifyCode(resetKey, otpCode); err != nil {
+			log.Printf("invalid OTP for password reset on email %s: %v", email, err)
+			return errors.New("invalid or expired OTP code")
+		}
+	} else {
+		return errors.New("verification service not configured")
+	}
+
+	// 3. Generate random 8-character password
+	tempPassword, err := util.GenerateRandomPassword(8)
+	if err != nil {
+		log.Printf("failed to generate temporary password for %s: %v", email, err)
+		return errors.New("failed to generate temporary password")
+	}
+
+	// 4. Hash the temporary password
+	hashedPassword, err := util.HashPassword(tempPassword)
+	if err != nil {
+		return err
+	}
+
+	// 5. Find and update password credential
+	var pwCred *model.Credential
+	for i, c := range user.Credentials {
+		if c.Type == model.CredTypePassword {
+			pwCred = &user.Credentials[i]
+			break
+		}
+	}
+	if pwCred == nil {
+		return errors.New("password credential not found")
+	}
+
+	pwCred.Value = hashedPassword
+	if err := s.credentialRepo.Update(pwCred); err != nil {
+		return err
+	}
+
+	// 6. Send the temporary password to user's email
+	if err := emailSvc.SendTemporaryPassword(user.Email, tempPassword); err != nil {
+		log.Printf("failed to send temporary password to %s: %v", user.Email, err)
+		return err
+	}
+
+	// 7. Clean up the OTP from verification storage
+	if s.verificationSvc != nil {
+		resetKey := "forgot_password:" + user.ID.String()
+		_ = s.verificationSvc.DeleteCode(resetKey) // Ignore error if key doesn't exist
+	}
+
+	log.Printf("password reset completed for user %s", user.Email)
+	return nil
+}

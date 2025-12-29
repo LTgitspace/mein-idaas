@@ -58,3 +58,35 @@ type PasswordChangeResponse struct {
 	Message string `json:"message"`
 	Email   string `json:"email"`
 }
+
+type ForgotPasswordRequest struct {
+	Email string `json:"email" validate:"required,email"`
+}
+
+type ResetPasswordRequest struct {
+	Email       string `json:"email" validate:"required,email"`
+	Code        string `json:"code" validate:"required,len=6"` // The OTP
+	NewPassword string `json:"new_password" validate:"required,min=8"`
+}
+
+// ForgotPasswordSendOTPRequest initiates password reset with OTP
+type ForgotPasswordSendOTPRequest struct {
+	Email string `json:"email" validate:"required,email"`
+}
+
+// ForgotPasswordSendOTPResponse confirms OTP was sent (always 200 OK, logs silently if email not found)
+type ForgotPasswordSendOTPResponse struct {
+	Message string `json:"message"`
+}
+
+// ResetPasswordWithOTPRequest completes password reset with OTP validation
+type ResetPasswordWithOTPRequest struct {
+	Email string `json:"email" validate:"required,email"`
+	OTP   string `json:"otp" validate:"required,len=6"`
+}
+
+// ResetPasswordWithOTPResponse confirms password was reset
+type ResetPasswordWithOTPResponse struct {
+	Message string `json:"message"`
+	Email   string `json:"email"`
+}

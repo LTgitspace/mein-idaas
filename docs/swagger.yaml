@@ -1,5 +1,17 @@
 basePath: /api/v1
 definitions:
+  dto.ForgotPasswordSendOTPRequest:
+    properties:
+      email:
+        type: string
+    required:
+    - email
+    type: object
+  dto.ForgotPasswordSendOTPResponse:
+    properties:
+      message:
+        type: string
+    type: object
   dto.LoginRequest:
     properties:
       email:
@@ -76,6 +88,23 @@ definitions:
     required:
     - email
     type: object
+  dto.ResetPasswordWithOTPRequest:
+    properties:
+      email:
+        type: string
+      otp:
+        type: string
+    required:
+    - email
+    - otp
+    type: object
+  dto.ResetPasswordWithOTPResponse:
+    properties:
+      email:
+        type: string
+      message:
+        type: string
+    type: object
   dto.VerifyEmailRequest:
     properties:
       code:
@@ -99,6 +128,83 @@ info:
   title: Mein IDaaS API
   version: "1.0"
 paths:
+  /auth/forgot-password/reset:
+    post:
+      consumes:
+      - application/json
+      description: Validates the OTP code and resets the user's password to a temporary
+        one. The temporary password is sent to the user's email.
+      parameters:
+      - description: Email and OTP code
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/dto.ResetPasswordWithOTPRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.ResetPasswordWithOTPResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Reset password with OTP
+      tags:
+      - auth
+  /auth/forgot-password/send-otp:
+    post:
+      consumes:
+      - application/json
+      description: Sends a 6-digit OTP code to the user's email for password reset.
+        Email must exist in the system. If email doesn't exist, returns 200 OK for
+        security (prevents email enumeration).
+      parameters:
+      - description: Email address
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/dto.ForgotPasswordSendOTPRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.ForgotPasswordSendOTPResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Send password reset OTP
+      tags:
+      - auth
   /auth/login:
     post:
       consumes:

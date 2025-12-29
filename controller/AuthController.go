@@ -287,3 +287,81 @@ func (ac *AuthController) ChangePassword(c *fiber.Ctx) error {
 		Email:   user.Email,
 	})
 }
+
+// SendForgotPasswordOTP godoc
+// @Summary      Send password reset OTP
+// @Description  Sends a 6-digit OTP code to the user's email for password reset. Email must exist in the system. If email doesn't exist, returns 200 OK for security (prevents email enumeration).
+// @Tags         auth
+// @Accept       json
+// @Produce      json
+// @Param        payload body dto.ForgotPasswordSendOTPRequest true "Email address"
+// @Success      200  {object}  dto.ForgotPasswordSendOTPResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /auth/forgot-password/send-otp [post]
+func (ac *AuthController) SendForgotPasswordOTP(c *fiber.Ctx) error {
+	var req dto.ForgotPasswordSendOTPRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request payload"})
+	}
+
+	// Validate request
+	if err := util.ValidateStruct(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// Get email service from context or create a new one
+	emailSvc := service.NewEmailService()
+
+	// Send OTP (silently fails if email not found)
+	if err := ac.svc.SendForgotPasswordOTP(req.Email, emailSvc); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(dto.ForgotPasswordSendOTPResponse{
+		Message: "if email exists, a password reset code has been sent",
+	})
+}
+
+// ResetPasswordWithOTP godoc
+// @Summary      Reset password with OTP
+// @Description  Validates the OTP code and resets the user's password to a temporary one. The temporary password is sent to the user's email.
+// @Tags         auth
+// @Accept       json
+// @Produce      json
+// @Param        payload body dto.ResetPasswordWithOTPRequest true "Email and OTP code"
+// @Success      200  {object}  dto.ResetPasswordWithOTPResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /auth/forgot-password/reset [post]
+func (ac *AuthController) ResetPasswordWithOTP(c *fiber.Ctx) error {
+	var req dto.ResetPasswordWithOTPRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request payload"})
+	}
+
+	// Validate request
+	if err := util.ValidateStruct(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// Get email service
+	emailSvc := service.NewEmailService()
+
+	// Reset password
+	if err := ac.svc.ResetPasswordWithOTP(req.Email, req.OTP, emailSvc); err != nil {
+		if err.Error() == "user not found" {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+		}
+		if err.Error() == "invalid or expired OTP code" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(dto.ResetPasswordWithOTPResponse{
+		Message: "password has been reset, check your email for the temporary password",
+		Email:   req.Email,
+	})
+}

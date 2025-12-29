@@ -376,6 +376,248 @@ Cookie: refresh_token=a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
 
 ---
 
+#### 7. Send Password Change OTP
+**POST** `/api/v1/auth/password-change/send-otp`
+
+**Headers:**
+```
+Authorization: Bearer <access_token>
+```
+
+**Response (200 OK):**
+```json
+{
+  "message": "OTP sent to your email",
+  "email": "john@example.com"
+}
+```
+
+**Status Codes:**
+- 200 - OTP sent successfully
+- 401 - Invalid or missing access token
+- 404 - User not found
+- 500 - Failed to send email
+
+**What Happens:**
+- Validates access token and extracts user ID
+- Generates 6-digit OTP code
+- Sends OTP to user's registered email
+- OTP valid for 5 minutes
+
+---
+
+#### 8. Change Password
+**POST** `/api/v1/auth/password-change`
+
+**Headers:**
+```
+Authorization: Bearer <access_token>
+```
+
+**Request:**
+```json
+{
+  "old_password": "OldPassword123!",
+  "new_password": "NewPassword456!",
+  "otp_code": "123456"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "message": "password changed successfully",
+  "email": "john@example.com"
+}
+```
+
+**Status Codes:**
+- 200 - Password changed successfully
+- 400 - Invalid OTP or passwords don't meet requirements
+- 401 - Invalid/expired token or wrong old password
+- 500 - Internal server error
+
+**What Happens:**
+- Validates access token
+- Verifies OTP code (must be valid and not expired)
+- Validates old password is correct
+- Ensures new password is different from old
+- Hashes new password with Argon2
+- Updates password credential in database
+- OTP is consumed and cannot be reused
+
+---
+
+#### 9. Send Forgot Password OTP
+**POST** `/api/v1/auth/forgot-password/send-otp`
+
+**Request:**
+```json
+{
+  "email": "john@example.com"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "message": "if email exists, a password reset code has been sent"
+}
+```
+
+**Status Codes:**
+- 200 - Always returns 200 (even if email doesn't exist)
+- 400 - Invalid email format
+- 500 - Failed to send email
+
+**Security Note:** Returns 200 regardless of whether email exists in system. This prevents email enumeration attacks.
+
+**What Happens:**
+- Checks if email exists in system
+- If NOT found: Silently logs the request and returns success
+- If found: Generates 6-digit OTP code with 5-minute TTL
+- Sends OTP to user's email
+- OTP stored securely with user ID as key
+
+---
+
+#### 10. Reset Password with OTP
+**POST** `/api/v1/auth/forgot-password/reset`
+
+**Request:**
+```json
+{
+  "email": "john@example.com",
+  "otp": "123456"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "message": "password has been reset, check your email for the temporary password",
+  "email": "john@example.com"
+}
+```
+
+**Response (400 Bad Request):**
+```json
+{
+  "error": "invalid or expired OTP code"
+}
+```
+
+**Status Codes:**
+- 200 - Password reset successfully
+- 400 - Invalid/expired OTP code
+- 404 - User not found
+- 500 - Internal server error
+
+**What Happens:**
+- Validates email exists in system
+- Verifies OTP code (6 digits, 5-minute expiration)
+- Generates random 8-character temporary password
+- Hashes temporary password with Argon2
+- Updates user's password credential
+- Sends temporary password to user's email
+- OTP is consumed and deleted (prevents reuse)
+- User can now login with temporary password
+
+**Important:** User should change the temporary password immediately after login for security.
+
+---
+
+## Complete Authentication Flows
+
+### Registration & Email Verification
+```
+1. User calls POST /auth/register
+   ├─ System creates user account
+   ├─ System hashes password (Argon2)
+   ├─ System sends verification email with OTP (async)
+   └─ User receives OTP in email
+
+2. User calls POST /auth/verify
+   ├─ System validates OTP (6 digits, 5-minute TTL)
+   ├─ System marks user as email-verified
+   └─ User can now login
+
+3. User calls POST /auth/login
+   ├─ System validates credentials
+   ├─ System checks email is verified
+   ├─ System issues access token (15 minutes)
+   ├─ System issues refresh token (7 days, stored in HTTP-only cookie)
+   └─ User receives tokens and is logged in
+```
+
+### Password Change (Authenticated User)
+```
+1. User calls POST /auth/password-change/send-otp
+   ├─ System validates access token
+   ├─ System generates 6-digit OTP
+   ├─ System sends OTP to user's email
+   └─ User receives OTP
+
+2. User calls POST /auth/password-change
+   ├─ System validates access token
+   ├─ System validates OTP (6 digits, 5-minute TTL)
+   ├─ System verifies old password is correct
+   ├─ System hashes new password (Argon2)
+   ├─ System updates password in database
+   ├─ System deletes used OTP (prevents replay)
+   └─ Password is changed successfully
+```
+
+### Password Reset (Forgot Password)
+```
+1. User calls POST /auth/forgot-password/send-otp
+   ├─ User provides email address
+   ├─ System checks if email exists (silently logs if not)
+   ├─ System generates 6-digit OTP (5-minute TTL)
+   ├─ System sends OTP to email
+   └─ User receives OTP (if account exists)
+
+2. User calls POST /auth/forgot-password/reset
+   ├─ User provides email + OTP code
+   ├─ System validates OTP is correct and not expired
+   ├─ System generates random 8-character temporary password
+   ├─ System hashes temporary password (Argon2)
+   ├─ System updates password in database
+   ├─ System sends temporary password to email
+   ├─ System deletes used OTP
+   └─ User can now login with temporary password
+
+3. User calls POST /auth/login
+   ├─ User logs in with email + temporary password
+   ├─ System issues tokens
+   └─ User is logged in
+
+4. User calls POST /auth/password-change/send-otp
+   ├─ User changes temporary password to permanent one (recommended)
+   └─ Password is secured
+```
+
+### Token Rotation (Every 7 Days)
+```
+Day 0: User logs in
+├─ Access Token issued (15 minutes)
+├─ Refresh Token issued (7 days, stored in HTTP-only cookie)
+└─ Old refresh token stored hashed in DB
+
+Day 7: Access token expires during API call
+├─ Client calls POST /auth/refresh
+├─ Client sends refresh token cookie
+├─ Server validates refresh token exists & not revoked
+├─ Server checks 10-second grace period for concurrent requests
+├─ Server detects no theft (first time using token)
+├─ Server issues NEW access token (15 minutes)
+├─ Server issues NEW refresh token (7 days)
+├─ Server marks old token as "replaced"
+└─ Process repeats every 7 days...
+```
+
+---
+
 ## JWT Token Structure
 
 ### Access Token Payload
@@ -469,6 +711,13 @@ SMTP_FROM=noreply@mein-idaas.com
 # Server Configuration
 PORT=4000
 COOKIE_PATH=/api/v1/auth
+
+# Argon2 Password Hashing
+ARGON2_TIME=3
+ARGON2_MEMORY=65536
+ARGON2_THREADS=4
+ARGON2_KEY_LENGTH=32
+ARGON2_SALT_LENGTH=16
 ```
 
 4. Generate RSA keys (if not present):
@@ -680,9 +929,51 @@ Note: Uses in-memory storage with automatic cleanup. For production, consider Re
 ## Security Features
 
 ### Password Security
-- Bcrypt hashing with configurable salt rounds (default: 10)
-- Passwords never stored in plain text
-- Constant-time comparison prevents timing attacks
+- **Argon2id hashing** - Memory-hard password hashing algorithm resistant to GPU/ASIC attacks
+- **Dynamic parameter support** - Argon2 parameters configurable via environment variables without locking users out
+- **Parameter extraction** - Each password hash stores its own parameters (time, memory, threads)
+- **Safe parameter changes** - Global parameters can be updated; old passwords validated using their stored parameters
+- **Passwords never stored in plain text** - Only secure hashes stored in database
+- **Constant-time comparison** - Prevents timing attacks during password verification
+
+### Argon2 Implementation Details
+
+Your system uses **Argon2id** with the following hash format:
+
+```
+$argon2id$v=19$m=<memory>,t=<time>,p=<threads>$<salt_hex>$<hash_hex>
+```
+
+**Example hash:**
+```
+$argon2id$v=19$m=65536,t=3,p=4$abcd1234efgh5678$xyz123abc456def789xyz123abc456def789xyz1234567
+```
+
+**How it works:**
+
+1. **Hash Creation** - New passwords hashed with current global parameters from `.env`:
+   - Parameters embedded in the hash string
+   - Salt randomly generated and stored in hash
+   - Hash is computed using embedded parameters
+
+2. **Password Validation** - When user logs in:
+   - Extract salt from stored hash
+   - Extract parameters (m, t, p) from hash format
+   - Recompute hash using **EXTRACTED parameters** (not global variables)
+   - Compare computed hash with stored hash
+   - User logs in successfully
+
+3. **Safe Parameter Updates** - You can change Argon2 parameters in `.env`:
+   - Old passwords continue to validate (use their stored parameters)
+   - New passwords use updated parameters
+   - No users locked out during migration
+   - Gradual security improvement as users re-register
+
+**Why this is secure:**
+- Each password is self-contained with its own parameters
+- Global parameters only affect NEW passwords
+- Old password hashes are immutable and always validate correctly
+- Allows incremental security upgrades without service disruption
 
 ### JWT Security
 - RSA-256 asymmetric signing (public/private key pair)
@@ -706,7 +997,7 @@ Note: Uses in-memory storage with automatic cleanup. For production, consider Re
 - Prevents token replay attacks
 
 ### Database Security
-- Refresh tokens stored hashed (bcrypt), not plain text
+- Refresh tokens stored hashed (SHA-256), not plain text
 - Unique email constraint prevents duplicate accounts
 - Foreign key constraints with cascade deletion
 - Token audit trail (IP, User-Agent, timestamps)
@@ -743,32 +1034,57 @@ JWT_REFRESH_TTL      # Refresh token TTL (default: 168h = 7 days)
 # Grace Period
 REFRESH_GRACE_PERIOD # Grace window for token rotation (default: 10s)
 
+# Argon2 Password Hashing
+ARGON2_TIME          # Iterations (default: 3) - Higher = more secure but slower
+ARGON2_MEMORY        # Memory in KB (default: 65536 = 64MB) - Higher = more resistant to attacks
+ARGON2_THREADS       # Parallel threads (default: 4) - Should match CPU cores
+ARGON2_KEY_LENGTH    # Hash output length in bytes (default: 32) - Higher = more secure
+ARGON2_SALT_LENGTH   # Salt length in bytes (default: 16) - Higher = more unique
+
 # Email / SMTP
 SMTP_HOST            # SMTP server host
 SMTP_PORT            # SMTP server port
 SMTP_USER            # SMTP username
 SMTP_PASSWORD        # SMTP password (app password for Gmail)
-SMTP_FROM            # From email address
+SMTP_SENDER_NAME     # Sender name in emails
 
 # Server
 PORT                 # Server port (default: 4000)
 COOKIE_PATH          # Cookie path (default: /api/v1/auth)
 ```
 
----
+### Argon2 Parameter Tuning
 
-## HTTP Status Codes
+Choose parameters based on your security requirements and hardware:
 
-| Code | Status | Scenario |
-|------|--------|----------|
-| 200 | OK | Login/Refresh successful, verification email sent |
-| 201 | Created | User registered successfully |
-| 202 | Accepted | Verification email accepted for sending (async) |
-| 400 | Bad Request | Invalid request format or validation error |
-| 401 | Unauthorized | Invalid credentials, expired token, or token replay detected |
-| 403 | Forbidden | Email not verified - can't login yet |
-| 404 | Not Found | User or resource not found |
-| 500 | Server Error | Database error or internal server error |
+**Development/Testing (Fast):**
+```env
+ARGON2_TIME=1
+ARGON2_MEMORY=16384
+ARGON2_THREADS=2
+```
+- Password hashing: ~50ms
+- Login: ~100-150ms
+
+**Standard Security (Recommended):**
+```env
+ARGON2_TIME=3
+ARGON2_MEMORY=65536
+ARGON2_THREADS=4
+```
+- Password hashing: ~200-300ms
+- Login: ~400-500ms
+
+**High Security (Production):**
+```env
+ARGON2_TIME=4
+ARGON2_MEMORY=262144
+ARGON2_THREADS=8
+```
+- Password hashing: ~1-2 seconds
+- Login: ~2-3 seconds
+
+Important: Higher parameters = slower login (users notice this). Choose based on your threat model.
 
 ---
 
