@@ -14,6 +14,9 @@ type User struct {
 	Email           string    `gorm:"size:255;not null;uniqueIndex"`
 	CreatedAt       time.Time `gorm:"autoCreateTime"`
 	UpdatedAt       time.Time `gorm:"autoUpdateTime"`
+	IsMFAEnabled    bool      `gorm:"default:false"`
+	MFASecret       string    `gorm:"type:text"`
+	BackupCodes     string    `gorm:"type:text"`
 
 	Credentials   []Credential   `gorm:"foreignKey:UserID;constraint:OnDelete:CASCADE;"`
 	RefreshTokens []RefreshToken `gorm:"foreignKey:UserID;constraint:OnDelete:CASCADE;"`

@@ -90,3 +90,20 @@ type ResetPasswordWithOTPResponse struct {
 	Message string `json:"message"`
 	Email   string `json:"email"`
 }
+
+// MFA setup and QR code DTOs
+type MFASetupResponse struct {
+	Secret    string `json:"secret"`
+	QRCodeURL string `json:"qr_code_url"`
+}
+
+// MFAQRCodeResponse used if returning base64 encoded PNG (not used when serving image/png directly)
+type MFAQRCodeResponse struct {
+	QRCodeBase64 string `json:"qr_code_base64"`
+}
+
+// MFA setup verify request for confirming the TOTP code
+type MFASetupVerifyRequest struct {
+	Secret string `json:"secret" validate:"required"`
+	Token  string `json:"token" validate:"required,len=6"`
+}

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/base64"
 	"os"
 	"time"
 
@@ -364,4 +365,132 @@ func (ac *AuthController) ResetPasswordWithOTP(c *fiber.Ctx) error {
 		Message: "password has been reset, check your email for the temporary password",
 		Email:   req.Email,
 	})
+}
+
+// SetupMFA godoc
+// @Summary      Initiate MFA setup for authenticated user
+// @Description  Generates a TOTP secret and returns a secret and a QR code URL. Requires valid access token in Authorization header.
+// @Tags         auth
+// @Accept       json
+// @Produce      json
+// @Param        Authorization header string true "Bearer <access_token>"
+// @Success      200  {object}  dto.MFASetupResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      401  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /auth/mfa/setup [post]
+func (ac *AuthController) SetupMFA(c *fiber.Ctx) error {
+	authHeader := c.Get("Authorization")
+	if authHeader == "" {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing authorization header"})
+	}
+
+	userID, err := util.ExtractUserIDFromToken(authHeader)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid or expired token"})
+	}
+
+	secret, qrURL, err := ac.svc.InitiateMFA(userID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(dto.MFASetupResponse{Secret: secret, QRCodeURL: qrURL})
+}
+
+// GetMFAQRCode godoc
+// @Summary      Get QR Code PNG for MFA setup
+// @Description  Returns a PNG image of the QR code for TOTP enrollment. Query params: email, secret
+// @Tags         auth
+// @Produce      image/png
+// @Param        email query string true "User email"
+// @Param        secret query string true "TOTP secret"
+// @Success      200  {file}  file
+// @Failure      400  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /auth/mfa/qrcode [get]
+func (ac *AuthController) GetMFAQRCode(c *fiber.Ctx) error {
+	email := c.Query("email")
+	secret := c.Query("secret")
+	if email == "" || secret == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "email and secret are required"})
+	}
+
+	pngBytes, err := util.GetTOTPQRCode(secret, email)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	c.Type("png")
+	return c.Status(fiber.StatusOK).Send(pngBytes)
+}
+
+// GetMFAQRCodeBase64 godoc
+// @Summary      Get QR Code (base64) for MFA setup
+// @Description  Returns a base64-encoded PNG image of the QR code for TOTP enrollment. Query params: email, secret
+// @Tags         auth
+// @Produce      json
+// @Param        email query string true "User email"
+// @Param        secret query string true "TOTP secret"
+// @Success      200  {object}  dto.MFAQRCodeResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /auth/mfa/qrcode/base64 [get]
+func (ac *AuthController) GetMFAQRCodeBase64(c *fiber.Ctx) error {
+	email := c.Query("email")
+	secret := c.Query("secret")
+	if email == "" || secret == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "email and secret are required"})
+	}
+
+	pngBytes, err := util.GetTOTPQRCode(secret, email)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	b64 := base64.StdEncoding.EncodeToString(pngBytes)
+	return c.Status(fiber.StatusOK).JSON(dto.MFAQRCodeResponse{QRCodeBase64: b64})
+}
+
+// ConfirmMFA godoc
+// @Summary      Confirm MFA setup
+// @Description  Verifies the TOTP token provided by the user and enables MFA for their account. Requires Authorization header.
+// @Tags         auth
+// @Accept       json
+// @Produce      json
+// @Param        Authorization header string true "Bearer <access_token>"
+// @Param        payload body dto.MFASetupVerifyRequest true "MFA verify payload"
+// @Success      200  {object}  map[string]string
+// @Failure      400  {object}  map[string]string
+// @Failure      401  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /auth/mfa/confirm [post]
+func (ac *AuthController) ConfirmMFA(c *fiber.Ctx) error {
+	authHeader := c.Get("Authorization")
+	if authHeader == "" {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing authorization header"})
+	}
+
+	userID, err := util.ExtractUserIDFromToken(authHeader)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid or expired token"})
+	}
+
+	var req dto.MFASetupVerifyRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request payload"})
+	}
+
+	if err := util.ValidateStruct(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	if err := ac.svc.ConfirmMFA(userID, req.Secret, req.Token); err != nil {
+		if err.Error() == "invalid MFA token" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid MFA token"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "MFA enabled successfully"})
 }

@@ -3,8 +3,8 @@ package service
 import (
 	"errors"
 	"log"
+	"net/url"
 	"os"
-	_ "strconv"
 	"time"
 
 	"mein-idaas/dto"
@@ -606,5 +606,57 @@ func (s *AuthService) ResetPasswordWithOTP(email string, otpCode string, emailSv
 	}
 
 	log.Printf("password reset completed for user %s", user.Email)
+	return nil
+}
+
+// InitiateMFA generates a TOTP secret for the user and returns the secret and a QR code URL
+func (s *AuthService) InitiateMFA(userID string) (string, string, error) {
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return "", "", errors.New("invalid user ID format")
+	}
+
+	user, err := s.userRepo.GetByID(uid)
+	if err != nil {
+		return "", "", err
+	}
+
+	secret, err := util.GenerateTOTPSecret(user.Email)
+	if err != nil {
+		return "", "", err
+	}
+
+	// Build a local QR code endpoint (client can call /auth/mfa/qrcode with email & secret)
+	qrURL := "/auth/mfa/qrcode?email=" + url.QueryEscape(user.Email) + "&secret=" + url.QueryEscape(secret)
+
+	return secret, qrURL, nil
+}
+
+// ConfirmMFA verifies the provided TOTP token against the secret and enables MFA for the user
+func (s *AuthService) ConfirmMFA(userID string, secret string, token string) error {
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return errors.New("invalid user ID format")
+	}
+
+	// Verify TOTP
+	if !util.VerifyTOTP(secret, token) {
+		return errors.New("invalid MFA token")
+	}
+
+	// Persist secret and enable MFA
+	user, err := s.userRepo.GetByID(uid)
+	if err != nil {
+		return err
+	}
+
+	user.MFASecret = secret
+	user.IsMFAEnabled = true
+
+	if err := s.userRepo.Update(user); err != nil {
+		log.Printf("failed to save MFA settings for user %s: %v", user.Email, err)
+		return err
+	}
+
 	return nil
 }

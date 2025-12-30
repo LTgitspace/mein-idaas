@@ -92,6 +92,12 @@ func setupRoutes(app *fiber.App, userRepo repository.UserRepository, credentialR
 	auth.Post("/login", authController.Login)
 	auth.Post("/refresh", authController.Refresh)
 
+	// MFA endpoints
+	auth.Post("/mfa/setup", authController.SetupMFA)
+	auth.Get("/mfa/qrcode", authController.GetMFAQRCode)
+	auth.Get("/mfa/qrcode/base64", authController.GetMFAQRCodeBase64)
+	auth.Post("/mfa/confirm", authController.ConfirmMFA)
+
 	// password change endpoints
 	auth.Post("/password-change/send-otp", authController.SendPasswordChangeOTP)
 	auth.Post("/password-change", authController.ChangePassword)

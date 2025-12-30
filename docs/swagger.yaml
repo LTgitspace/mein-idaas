@@ -22,6 +22,28 @@ definitions:
     - email
     - password
     type: object
+  dto.MFAQRCodeResponse:
+    properties:
+      qr_code_base64:
+        type: string
+    type: object
+  dto.MFASetupResponse:
+    properties:
+      qr_code_url:
+        type: string
+      secret:
+        type: string
+    type: object
+  dto.MFASetupVerifyRequest:
+    properties:
+      secret:
+        type: string
+      token:
+        type: string
+    required:
+    - secret
+    - token
+    type: object
   dto.PasswordChangeRequest:
     properties:
       new_password:
@@ -256,6 +278,168 @@ paths:
               type: string
             type: object
       summary: Login with email and password
+      tags:
+      - auth
+  /auth/mfa/confirm:
+    post:
+      consumes:
+      - application/json
+      description: Verifies the TOTP token provided by the user and enables MFA for
+        their account. Requires Authorization header.
+      parameters:
+      - description: Bearer <access_token>
+        in: header
+        name: Authorization
+        required: true
+        type: string
+      - description: MFA verify payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/dto.MFASetupVerifyRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Confirm MFA setup
+      tags:
+      - auth
+  /auth/mfa/qrcode:
+    get:
+      description: 'Returns a PNG image of the QR code for TOTP enrollment. Query
+        params: email, secret'
+      parameters:
+      - description: User email
+        in: query
+        name: email
+        required: true
+        type: string
+      - description: TOTP secret
+        in: query
+        name: secret
+        required: true
+        type: string
+      produces:
+      - image/png
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Get QR Code PNG for MFA setup
+      tags:
+      - auth
+  /auth/mfa/qrcode/base64:
+    get:
+      description: 'Returns a base64-encoded PNG image of the QR code for TOTP enrollment.
+        Query params: email, secret'
+      parameters:
+      - description: User email
+        in: query
+        name: email
+        required: true
+        type: string
+      - description: TOTP secret
+        in: query
+        name: secret
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.MFAQRCodeResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Get QR Code (base64) for MFA setup
+      tags:
+      - auth
+  /auth/mfa/setup:
+    post:
+      consumes:
+      - application/json
+      description: Generates a TOTP secret and returns a secret and a QR code URL.
+        Requires valid access token in Authorization header.
+      parameters:
+      - description: Bearer <access_token>
+        in: header
+        name: Authorization
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.MFASetupResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Initiate MFA setup for authenticated user
       tags:
       - auth
   /auth/password-change:
