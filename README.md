@@ -527,6 +527,187 @@ Authorization: Bearer <access_token>
 
 ---
 
+#### 11. Setup MFA (Initiate)
+**POST** `/api/v1/auth/mfa/setup`
+
+**Headers:**
+```
+Authorization: Bearer <access_token>
+```
+
+**Response (200 OK):**
+```json
+{
+  "secret": "JBSWY3DPEBLW64TMMQ======",
+  "qr_code_url": "/auth/mfa/qrcode?email=john@example.com&secret=JBSWY3DPEBLW64TMMQ======"
+}
+```
+
+**Response (403 Forbidden) - Email Not Verified:**
+```json
+{
+  "error": "email not verified",
+  "message": "your email must be verified before setting up MFA. verification code has been sent to your email address."
+}
+```
+
+**Status Codes:**
+- 200 - TOTP secret generated successfully
+- 400 - Invalid access token format
+- 401 - Invalid or expired access token
+- 403 - Email not verified (OTP auto-sent to user)
+- 500 - Failed to generate secret
+
+**What Happens:**
+- Validates access token and extracts user ID
+- Checks if user's email is verified
+- If NOT verified: Automatically sends verification OTP to email, returns 403
+- If verified: Generates TOTP secret (base32 encoded)
+- Returns secret + QR code URL for authenticator enrollment
+
+**Important:** Email must be verified before MFA setup. If not, the system automatically sends a verification OTP.
+
+---
+
+#### 12. Get MFA QR Code (PNG)
+**GET** `/auth/mfa/qrcode?email=john@example.com&secret=JBSWY3DPEBLW64TMMQ======`
+
+**Response (200 OK):**
+```
+PNG image file (256x256 pixels)
+```
+
+**Status Codes:**
+- 200 - QR code PNG image
+- 400 - Missing email or secret query parameters
+- 500 - Failed to generate QR code
+
+**What Happens:**
+- Generates a scannable QR code image from the TOTP secret
+- QR code encodes the secret in otpauth:// URL format
+- User scans with Google Authenticator, Microsoft Authenticator, Authy, or FreeOTP
+- Authenticator app displays 6-digit code that changes every 30 seconds
+
+**Supported Authenticator Apps:**
+- Google Authenticator
+- Microsoft Authenticator
+- Authy
+- FreeOTP
+- 1Password
+- LastPass Authenticator
+
+---
+
+#### 13. Get MFA QR Code (Base64)
+**GET** `/auth/mfa/qrcode/base64?email=john@example.com&secret=JBSWY3DPEBLW64TMMQ======`
+
+**Response (200 OK):**
+```json
+{
+  "qr_code_base64": "iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAYAAABccqhmAAACN0lEQVR4nO3WQQrCQBRA0W..."
+}
+```
+
+**Status Codes:**
+- 200 - Base64-encoded QR code PNG
+- 400 - Missing email or secret query parameters
+- 500 - Failed to generate QR code
+
+**What Happens:**
+- Same as above endpoint, but returns base64-encoded PNG for JSON response
+- Useful for frontend applications that need to display QR code in-app
+- Can be used directly in `<img src="data:image/png;base64,..." />`
+
+---
+
+#### 14. Confirm MFA (Verify & Enable)
+**POST** `/api/v1/auth/mfa/confirm`
+
+**Headers:**
+```
+Authorization: Bearer <access_token>
+```
+
+**Request:**
+```json
+{
+  "secret": "JBSWY3DPEBLW64TMMQ======",
+  "token": "123456"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "message": "MFA enabled successfully"
+}
+```
+
+**Status Codes:**
+- 200 - MFA enabled on user account
+- 400 - Invalid TOTP token or invalid request payload
+- 401 - Invalid or expired access token
+- 500 - Failed to save MFA settings
+
+**What Happens:**
+- Validates access token and extracts user ID
+- Validates TOTP token against secret (6-digit code must be correct)
+- If invalid: Returns 400 with error message
+- If valid: Saves secret to user's account
+- Sets `IsMFAEnabled = true` on user record
+- MFA is now active for login
+
+**Important:** The 6-digit code is time-based and valid for approximately 30 seconds. If code expires, user must get a new code from authenticator app.
+
+---
+
+## MFA Authentication Flow
+
+### Multi-Factor Authentication Setup
+```
+1. User is logged in (has access token)
+   └─ User email must be verified
+
+2. User calls POST /auth/mfa/setup
+   ├─ System checks if email is verified
+   ├─ If NOT verified:
+   │  ├─ System sends verification OTP (async)
+   │  └─ Returns 403 (user must verify email first)
+   ├─ If verified:
+   │  ├─ System generates TOTP secret
+   │  ├─ System creates QR code URL
+   │  └─ Returns 200 with secret + QR URL
+
+3. User gets QR code
+   ├─ Calls GET /auth/mfa/qrcode (to display PNG)
+   ├─ Or GET /auth/mfa/qrcode/base64 (for JSON response)
+   └─ System returns QR code image
+
+4. User scans QR code
+   ├─ User opens Google Authenticator / Microsoft Authenticator / Authy
+   ├─ User scans QR code
+   ├─ Authenticator app displays 6-digit code
+   └─ Code changes every 30 seconds
+
+5. User calls POST /auth/mfa/confirm
+   ├─ User provides secret + current 6-digit code
+   ├─ System validates TOTP token
+   ├─ If valid:
+   │  ├─ System saves secret to user account
+   │  ├─ System sets IsMFAEnabled = true
+   │  └─ Returns 200 (MFA enabled)
+   ├─ If invalid:
+   │  └─ Returns 400 (code incorrect or expired)
+   └─ MFA is now active
+```
+
+### MFA Backup & Recovery
+- Backup codes feature: Not yet implemented (planned for future)
+- Secret storage: Stored in plaintext in database (standard practice)
+- Lost authenticator: User must use password reset flow to regain access
+
+---
+
 ## Complete Authentication Flows
 
 ### Registration & Email Verification

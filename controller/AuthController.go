@@ -2,6 +2,7 @@ package controller
 
 import (
 	"encoding/base64"
+	_ "log"
 	"os"
 	"time"
 

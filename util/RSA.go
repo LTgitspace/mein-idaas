@@ -16,6 +16,7 @@ var (
 
 // InitRSAKeys loads RSA keys from environment variables
 // Expects PEM-encoded keys (with proper BEGIN/END markers and newlines)
+// Supports both PKCS1 and PKCS8 private key formats
 // Environment variables:
 // - RSA_PRIVATE_KEY: Private key in PEM format
 // - RSA_PUBLIC_KEY: Public key in PEM format
@@ -40,9 +41,21 @@ func InitRSAKeys() error {
 		return errors.New("failed to decode private key PEM from RSA_PRIVATE_KEY - ensure it's properly formatted with BEGIN/END markers")
 	}
 
+	// Try parsing as PKCS1 first, then PKCS8 if that fails
 	priv, err := x509.ParsePKCS1PrivateKey(privBlock.Bytes)
 	if err != nil {
-		return errors.New("failed to parse private key: " + err.Error())
+		// Try PKCS8 format
+		privInterface, pkcs8Err := x509.ParsePKCS8PrivateKey(privBlock.Bytes)
+		if pkcs8Err != nil {
+			return errors.New("failed to parse private key (tried both PKCS1 and PKCS8): " + err.Error())
+		}
+
+		// Assert that it's an RSA private key
+		var ok bool
+		priv, ok = privInterface.(*rsa.PrivateKey)
+		if !ok {
+			return errors.New("private key is not an RSA key")
+		}
 	}
 
 	// Parse public key

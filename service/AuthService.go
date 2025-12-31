@@ -610,6 +610,7 @@ func (s *AuthService) ResetPasswordWithOTP(email string, otpCode string, emailSv
 }
 
 // InitiateMFA generates a TOTP secret for the user and returns the secret and a QR code URL
+// Requires user email to be verified first
 func (s *AuthService) InitiateMFA(userID string) (string, string, error) {
 	uid, err := uuid.Parse(userID)
 	if err != nil {
@@ -619,6 +620,11 @@ func (s *AuthService) InitiateMFA(userID string) (string, string, error) {
 	user, err := s.userRepo.GetByID(uid)
 	if err != nil {
 		return "", "", err
+	}
+
+	// Check if email is verified before allowing MFA setup
+	if !user.IsEmailVerified {
+		return "", "", errors.New("email not verified")
 	}
 
 	secret, err := util.GenerateTOTPSecret(user.Email)

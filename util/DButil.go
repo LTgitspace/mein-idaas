@@ -15,10 +15,15 @@ func InitDB() *gorm.DB {
 	// 1. CONFIGURATION
 	host := getEnv("DB_HOST", "localhost")
 	user := getEnv("DB_USER", "postgres")
-	password := getEnv("DB_PASSWORD", "xiaomi14T")
+	password := getEnv("DB_PASSWORD", "")
 	dbName := getEnv("DB_NAME", "idaas")
 	port := getEnv("DB_PORT", "5432")
 	sslmode := getEnv("DB_SSLMODE", "disable")
+
+	// Validate required environment variables
+	if password == "" {
+		log.Fatalf("DB_PASSWORD environment variable must be set")
+	}
 
 	// 2. BOOTSTRAP: CREATE DATABASE IF NOT EXISTS
 	maintenanceDSN := fmt.Sprintf("host=%s user=%s password=%s dbname=postgres port=%s sslmode=%s",
@@ -75,13 +80,13 @@ func InitDB() *gorm.DB {
 	}
 
 	// SetMaxOpenConns: Limit max concurrent queries to prevent DB overload
-	postgresDB.SetMaxOpenConns(50)
+	postgresDB.SetMaxOpenConns(1000)
 
 	// SetMaxIdleConns: Keep these open for fast response (essential for auth)
-	postgresDB.SetMaxIdleConns(50)
+	postgresDB.SetMaxIdleConns(30)
 
-	// SetConnMaxLifetime: Recycle connections every 30 mins to avoid stale connection errors
-	postgresDB.SetConnMaxLifetime(30 * time.Minute)
+	// SetConnMaxLifetime: Recycle connections every 15 mins to avoid stale connection errors
+	postgresDB.SetConnMaxLifetime(15 * time.Minute)
 
 	log.Println("Database connected, migrated, and pool configured!")
 	return db

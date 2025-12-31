@@ -71,6 +71,9 @@ func main() {
 }
 
 func setupRoutes(app *fiber.App, userRepo repository.UserRepository, credentialRepo repository.CredentialRepository, refreshTokenRepo repository.RefreshTokenRepository, roleRepo repository.RoleRepository, verificationService *service.VerificationService) {
+	// Apply rate limiter globally to all routes (must be first)
+	app.Use(middleware.RateLimitMiddleware)
+
 	// Apply timer metrics middleware globally to all routes
 	app.Use(middleware.TimerMetrics)
 

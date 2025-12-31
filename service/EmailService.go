@@ -26,8 +26,15 @@ func NewEmailService() *EmailService {
 
 	dialer := gomail.NewDialer(host, port, user, pass)
 
-	// Fix for common TLS issues (optional but recommended for dev)
-	dialer.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	// TLS configuration: Allow self-signed certs in dev, strict validation in production
+	env := os.Getenv("ENV")
+	if env == "" {
+		env = "development" // Default to development
+	}
+
+	skipVerify := env != "production" // Only skip verification if NOT production
+
+	dialer.TLSConfig = &tls.Config{InsecureSkipVerify: skipVerify}
 
 	return &EmailService{
 		dialer: dialer,

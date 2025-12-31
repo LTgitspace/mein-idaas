@@ -12,8 +12,13 @@ import (
 
 // GenerateTOTPSecret creates a new TOTP secret for MFA
 func GenerateTOTPSecret(email string) (string, error) {
+	issuer := os.Getenv("APP_NAME")
+	if issuer == "" {
+		issuer = "mein-idaas"
+	}
+
 	key, err := totp.Generate(totp.GenerateOpts{
-		Issuer:      os.Getenv("APP_NAME"),
+		Issuer:      issuer,
 		AccountName: email,
 	})
 	if err != nil {
@@ -24,8 +29,13 @@ func GenerateTOTPSecret(email string) (string, error) {
 
 // GetTOTPQRCode generates a QR code image for TOTP enrollment
 func GetTOTPQRCode(secret, email string) ([]byte, error) {
+	issuer := os.Getenv("APP_NAME")
+	if issuer == "" {
+		issuer = "mein-idaas"
+	}
+
 	key, err := otp.NewKeyFromURL(fmt.Sprintf("otpauth://totp/%s?secret=%s&issuer=%s",
-		email, secret, os.Getenv("APP_NAME")))
+		email, secret, issuer))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OTP key: %w", err)
 	}
