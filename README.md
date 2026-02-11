@@ -6,71 +6,67 @@ A lightweight, enterprise-free Identification-as-a-Service (IDaaS) platform buil
 
 Mein IDaaS provides a self-hosted alternative to enterprise IDaaS solutions like Okta or Azure AD. Perfect for developers who want:
 
-- **Simple JWT-based authentication** with access and refresh tokens
-- **Token rotation** every 7 days with grace period for enhanced security
-- **Email verification** with OTP codes (6-digit verification)
-- **Role-based access control (RBAC)** with granular permissions
-- **PostgreSQL persistence** with GORM ORM
-- **RSA-256 JWT signing** for asymmetric key security
-- **Built-in Swagger documentation** for easy API exploration
-- **Zero enterprise complexity** - just what you need
+- User management with email verification
+- JWT-based authentication with RSA-256 signing
+- Token rotation every 7 days with grace period for enhanced security
+- Multi-Factor Authentication (MFA) via TOTP (Google Authenticator, Microsoft Authenticator, Authy)
+- Secure password hashing with Argon2id
+- Password reset flow with OTP validation
+- Email delivery with SMTP
+- Role-based access control (RBAC)
+- Rate limiting with IP ban functionality
+- Built-in Swagger API documentation
+- PostgreSQL persistence with GORM ORM
+- Request timing metrics for performance monitoring
 
 ## Architecture
 
 The project follows a clean layered architecture:
 
 ```
-┌─────────────────────────────────┐
-│      HTTP Controllers           │ (Fiber Framework)
-│   (Request/Response Handling)   │
-└──────────────┬──────────────────┘
-               │
-┌──────────────▼──────────────────┐
-│     Service Layer               │ (Business Logic)
-│  (Auth, Email, Verification)    │
-└──────────────┬──────────────────┘
-               │
-┌──────────────▼──────────────────┐
-│     Repository Layer            │ (Data Access)
-│  (CRUD Operations, Queries)     │
-└──────────────┬──────────────────┘
-               │
-┌──────────────▼──────────────────┐
-│     PostgreSQL Database         │
-└─────────────────────────────────┘
+  HTTP Controllers
+   (Request/Response Handling)
+             |
+        Service Layer
+     (Business Logic)
+             |
+      Repository Layer
+    (Data Access / CRUD)
+             |
+      PostgreSQL Database
 ```
 
 ## Project Structure
 
 ```
 mein-idaas/
-├── main.go                 # Application entry point & route setup
+├── main.go                 # Application entry point
 ├── go.mod & go.sum        # Dependency management
-├── refresh_token_flow.md  # Token rotation flow documentation
+├── refresh_token_flow.md  # Token rotation documentation
 ├── README.md              # This file
 │
 ├── controller/
-│   ├── AuthController.go        # Register, Login, Refresh endpoints
+│   ├── AuthController.go        # Register, Login, Refresh, MFA endpoints
 │   └── VerificationController.go # Email verification endpoints
 │
 ├── service/
 │   ├── AuthService.go           # Core authentication & authorization
-│   ├── VerificationService.go   # Email verification logic
+│   ├── VerificationService.go   # Email & OTP verification logic
 │   └── EmailService.go          # Email sending (SMTP)
 │
 ├── repository/
 │   ├── UserRepository.go                    # User CRUD
-│   ├── CredentialRepository.go              # Credential storage
+│   ├── CredentialRepository.go              # Password & credential storage
 │   ├── RefreshTokenRepository.go            # Refresh token management
 │   ├── RoleRepository.go                    # Role queries
 │   ├── VerificationRepository.go            # Verification code storage
-│   └── InMemoryVerificationRepository.go    # In-memory OTP storage
+│   └── InMemoryVerificationRepository.go    # In-memory OTP cache (5min TTL)
 │
 ├── model/
-│   ├── User.go         # User entity with roles & email verification
-│   ├── Credential.go   # Password credentials
-│   ├── RefreshTokens.go # Refresh token storage with rotation
-│   ├── Role.go         # Role definitions
+│   ├── User.go         # User entity with roles, MFA, email verification
+│   ├── Credential.go   # Password credentials (Argon2 hashed)
+│   ├── RefreshTokens.go # Refresh token storage with rotation tracking
+│   ├── Role.go         # Role definitions (user, admin, etc.)
 │   ├── AuthClaims.go   # JWT claims structure
 │   └── Enums.go        # Enum types
 │
@@ -78,15 +74,20 @@ mein-idaas/
 │   ├── Auth.go    # Auth request/response DTOs
 │   └── Verify.go  # Verification request/response DTOs
 │
+├── middleware/
+│   ├── RateLimiter.go       # IP-based rate limiting with ban functionality
+│   └── TimerMetrics.go      # Request duration tracking
+│
 ├── util/
 │   ├── env.go              # Environment variable loading
 │   ├── DButil.go           # Database initialization
-│   ├── Auth_helpers.go     # Password hashing & verification
+│   ├── Auth_helpers.go     # Argon2 hashing & verification
 │   ├── JWT_generator.go    # Token generation (RSA-256)
 │   ├── token_verify.go     # Token validation
 │   ├── RSA.go              # RSA key management
 │   ├── OTP.go              # OTP generation
-│   ├── CronJob.go          # Cleanup jobs
+│   ├── TOTP.go             # TOTP generation & QR codes
+│   ├── CronJob.go          # Background cleanup jobs
 │   ├── Validator.go        # Input validation
 │   └── Error.go            # Error utilities
 │
@@ -103,6 +104,8 @@ mein-idaas/
 │
 ├── Dockerfile         # Docker image definition
 ├── docker-compose.yml # Docker Compose setup
+├── .env               # Environment variables (not in git)
+├── .env.example       # Environment template
 └── LICENSE
 ```
 
@@ -114,7 +117,7 @@ mein-idaas/
 1. REGISTER
    POST /api/v1/auth/register
    ├─ Create user account
-   ├─ Hash password with bcrypt
+   ├─ Hash password with Argon2id
    ├─ Assign default "user" role
    └─ Send verification email (async)
 
@@ -126,7 +129,7 @@ mein-idaas/
 
 3. LOGIN
    POST /api/v1/auth/login
-   ├─ Check credentials
+   ├─ Check credentials (Argon2 verification)
    ├─ Check if email is verified
    ├─ If not verified: send email, return 403
    ├─ If verified: issue tokens, return 200
@@ -135,8 +138,8 @@ mein-idaas/
 4. USE ACCESS TOKEN
    GET /api/v1/protected
    ├─ Authorization: Bearer <access_token>
-   ├─ Server validates JWT signature
-   ├─ Extract user_id & roles from token
+   ├─ Server validates JWT signature (RSA public key)
+   ├─ Extract user_id & roles from token claims
    └─ Process request
 
 5. REFRESH TOKENS (every 7 days)
@@ -165,7 +168,7 @@ Day 0 - User Logs In
 │   └─ Can be revoked                │
 │                                     │
 Day 0-7: Use Access Token for API calls
-│
+
 Day 7: Access Token Expires
 ├─ Client sends Refresh Token
 ├─ Server validates & marks old as replaced
@@ -199,9 +202,349 @@ Replay Attack (after 10 seconds):
 └─ Account is locked for security
 ```
 
+### Password Hashing with Argon2id
+
+Passwords are hashed using Argon2id (OWASP-recommended):
+
+Parameters (configurable via env vars):
+- Time: 3 iterations (ARGON2_TIME)
+- Memory: 64MB (ARGON2_MEMORY in KB)
+- Threads: 4 (ARGON2_THREADS)
+- Key Length: 32 bytes (ARGON2_KEY_LENGTH)
+- Salt Length: 16 bytes (ARGON2_SALT_LENGTH)
+
+IMPORTANT: Do NOT change Argon2 parameters after users register!
+
+Changing parameters will invalidate all existing password hashes. Your users will be unable to login.
+
+The hash stores its parameters internally, so validation always uses the parameters that created the hash (backward compatible).
+
+Example hash format:
+```
+$argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>
+```
+
+## Multi-Factor Authentication (MFA)
+
+MFA adds an extra layer of security by requiring a one-time password (OTP) in addition to the regular password. This implementation uses TOTP (Time-based One-Time Password) algorithm, compatible with authenticator apps like Google Authenticator, Microsoft Authenticator, and Authy.
+
+### TOTP-based MFA (Time-based One-Time Password)
+
+Supported authenticator apps:
+- Google Authenticator
+- Microsoft Authenticator
+- Authy
+- Any RFC 6238 compliant app
+
+### MFA Enrollment Flow
+
+1. USER REQUESTS MFA SETUP
+   POST /api/v1/auth/mfa/setup
+   - Reads access token from Authorization header
+   - Server validates email is verified (403 if not)
+   - If not verified, sends verification email
+   - Generates TOTP secret
+
+2. DISPLAY QR CODE
+   GET /api/v1/auth/mfa/qrcode/base64
+   - Returns base64-encoded PNG image
+   - User scans with authenticator app
+   - App generates 6-digit codes every 30 seconds
+
+3. VERIFY AND ACTIVATE
+   POST /api/v1/auth/mfa/verify
+   - User enters 6-digit code from app
+   - Server validates code against TOTP secret
+   - Generates 5 backup codes for account recovery
+   - Stores secret & backup codes encrypted
+   - Marks IsMFAEnabled=true
+   - Returns backup codes (save securely)
+
+4. LOGIN WITH MFA
+   POST /api/v1/auth/login
+   - Standard login (email + password)
+   - If MFA enabled: server returns 202 Accepted
+   - Client must follow up with TOTP code
+
+   POST /api/v1/auth/mfa/verify-login
+   - Send 6-digit code from authenticator
+   - If valid: issue tokens
+   - If backup code: mark it as used
+
+## Password Reset Flow
+
+1. REQUEST PASSWORD RESET
+   POST /api/v1/auth/password-reset/request
+   - User submits email
+   - If email exists: send OTP (async, user doesn't see confirmation)
+   - If email not found: still return 200 (security: don't reveal accounts)
+   - Server logs: "email not found: user@example.com"
+   - OTP valid for 5 minutes
+
+2. RESET PASSWORD WITH OTP
+   POST /api/v1/auth/password-reset/verify
+   - User submits email + OTP + new password
+   - Validate OTP (must match email)
+   - If valid: hash new password with Argon2
+   - Update password in DB
+   - Clear all refresh tokens (force re-login everywhere)
+   - Send confirmation email
+
+## Rate Limiting
+
+IP-based rate limiting with automatic bans:
+
+Configuration:
+- Limit: 10 requests per second
+- Ban duration: 10 minutes
+- Storage: In-memory with cleanup
+
+Request exceeding limit:
+├─ Count tracked per IP
+├─ 11th request in same second: IP banned
+├─ Banned responses: 429 Too Many Requests
+└─ Ban auto-expires after 10 minutes
+
+Note: Rate limiter applies to all routes globally.
+
+## Swagger API Documentation
+
+Auto-generated OpenAPI documentation available at:
+```
+http://localhost:4000/swagger/
+```
+
+All endpoints documented with:
+- Request/response examples
+- Parameter descriptions
+- Error codes and meanings
+- Authentication requirements
+
+## Request Timing Metrics
+
+All endpoints automatically tracked for response time.
+
+Middleware logs: [TIMER] {method} {path} - {duration_ms}ms
+
+Example:
+```
+[TIMER] POST /api/v1/auth/login - 42ms
+[TIMER] GET /api/v1/auth/mfa/qrcode/base64 - 15ms
+```
+
+## Configuration
+
+### Environment Variables
+
+Create a `.env` file in the project root:
+
+```env
+# Database
+DB_DSN=postgres://user:password@localhost:5432/mein_idaas
+
+# SMTP (Email)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your-email@gmail.com
+SMTP_PASS=your-app-password
+SMTP_FROM=noreply@your-domain.com
+
+# JWT & Tokens
+JWT_ACCESS_TTL=15m
+JWT_REFRESH_TTL=168h
+JWT_ISSUER=mein-idaas
+JWT_AUDIENCE=my-game-server,smoking-app
+
+# Argon2 Password Hashing
+ARGON2_TIME=3
+ARGON2_MEMORY=65536
+ARGON2_THREADS=4
+ARGON2_KEY_LENGTH=32
+ARGON2_SALT_LENGTH=16
+
+# RSA Keys (for JWT signing)
+RSA_PRIVATE_KEY_PATH=/path/to/private_key.pem
+RSA_PUBLIC_KEY_PATH=/path/to/public_key.pem
+
+# App Settings
+APP_NAME=mein-idaas
+PORT=4000
+COOKIE_PATH=/api/v1/auth
+```
+
+### Generating RSA Keys
+
+Create RSA key pair for JWT signing:
+
+```bash
+# Generate private key (PKCS#8 format)
+openssl genrsa -out private_key.pem 2048
+openssl pkcs8 -topk8 -nocrypt -in private_key.pem -out private_key.pem
+
+# Extract public key
+openssl rsa -in private_key.pem -pubout -out public_key.pem
+```
+
+Store paths in `RSA_PRIVATE_KEY_PATH` and `RSA_PUBLIC_KEY_PATH`.
+
+### Key Format Troubleshooting
+
+Error: "failed to parse private key: x509: failed to parse private key (use ParsePKCS8PrivateKey instead for this key format)"
+
+Cause: Key format mismatch (PKCS#1 vs PKCS#8).
+
+Solution - Convert PKCS#1 to PKCS#8:
+```bash
+openssl pkcs8 -topk8 -nocrypt -in key_pkcs1.pem -out key_pkcs8.pem
+```
+
+Solution - Convert PKCS#8 to PKCS#1:
+```bash
+openssl rsa -in key_pkcs8.pem -out key_pkcs1.pem
+```
+
+If storing keys in env vars, base64 encode to preserve newlines:
+
+Linux / WSL:
+```bash
+base64 -w0 private_key.pem > private_key.b64
+```
+
+PowerShell (Windows):
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes('C:\path\to\private_key.pem')) | Set-Clipboard
+```
+
+### SMTP Configuration Examples
+
+Gmail (with App Password):
+```env
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your-email@gmail.com
+SMTP_PASS=your-16-char-app-password
+```
+Note: Enable "Less secure app access" or use App Passwords with 2FA
+
+Self-hosted SMTP:
+```env
+SMTP_HOST=mail.example.com
+SMTP_PORT=587
+SMTP_USER=noreply@example.com
+SMTP_PASS=your-password
+```
+
+TLS / SSL Note:
+- Port 587: STARTTLS (plaintext connection upgraded to TLS)
+- Port 465: Implicit TLS (connect with TLS from start)
+- Port 25: No TLS (not recommended for external servers)
+
+For Gmail and most modern SMTP servers, TLS is automatically handled. You do NOT need a self-signed certificate to send mail.
+
+## Quick Start (Local - Windows)
+
+1. Set environment variables (PowerShell):
+```powershell
+$env:DB_DSN="postgres://user:pass@localhost:5432/mein_idaas"
+$env:SMTP_HOST="smtp.gmail.com"
+$env:SMTP_PORT="587"
+$env:SMTP_USER="you@gmail.com"
+$env:SMTP_PASS="your-app-password"
+$env:SMTP_FROM="noreply@example.com"
+$env:RSA_PRIVATE_KEY_PATH="C:\path\to\private_key.pem"
+$env:RSA_PUBLIC_KEY_PATH="C:\path\to\public_key.pem"
+```
+
+2. Install dependencies:
+```bash
+go mod download
+```
+
+3. Run:
+```bash
+go run main.go
+```
+
+4. Access Swagger:
+```
+http://localhost:4000/swagger/
+```
+
+## Quick Start (Docker)
+
+1. Create .env file with your configuration (see Configuration section)
+
+2. Start with Docker Compose:
+```bash
+docker-compose up --build
+```
+
+3. Database will initialize automatically
+4. Access Swagger at http://localhost:4000/swagger/
+
+## Docker Notes
+
+The Dockerfile:
+- Builds Go binary
+- Injects environment variables at runtime
+- Exposes port 4000
+- Requires database connection via env var
+
+## Security Considerations
+
+### Email Verification
+
+- Tokens are NOT generated during email verification
+- Verification only marks `user.IsEmailVerified = true`
+- Login fails if email not verified
+- Automatic verification email sent on first login attempt
+- OTP codes expire in 5 minutes
+
+### Token Security
+
+- Access tokens: 15-minute expiry (memory/cookie)
+- Refresh tokens: 7-day expiry (secure HttpOnly cookie)
+- JWT signed with RSA-256 (asymmetric)
+- Refresh tokens hashed in database (bcrypt)
+- Token rotation on every refresh
+- Grace period prevents race condition attacks
+
+### Password Security
+
+- Argon2id hashing (OWASP 2023 recommendation)
+- 16-byte random salt per password
+- Configurable iteration count (prevents brute force)
+- Passwords never stored in logs or error messages
+
+### MFA Security
+
+- TOTP secrets stored encrypted in database
+- Backup codes for account recovery
+- 6-digit codes: 30-second validity window
+- Compatible with all RFC 6238 authenticators
+
+### Rate Limiting
+
+- 10 requests per second per IP
+- 10-minute ban on exceeding limit
+- Prevents brute force and DoS attacks
+
+### CORS & TLS
+
+- TLS enforcement in production (Secure cookie flag)
+- For localhost development: set Secure=false if needed
+- HttpOnly cookies prevent XSS token theft
+- SameSite=Strict prevents CSRF
+
+### Database Pooling
+
+- GORM handles connection pooling automatically
+- Concurrent request support via connection pool
+- Cascade deletes for data consistency
+
 ## API Endpoints
 
-### Authentication Endpoints
+### Authentication
 
 #### 1. Register User
 **POST** `/api/v1/auth/register`
@@ -226,7 +569,7 @@ Replay Attack (after 10 seconds):
 
 **What Happens:**
 - User account is created in database
-- Password is hashed with bcrypt
+- Password is hashed with Argon2id
 - Default "user" role is assigned
 - Verification email with OTP is sent (asynchronously)
 - User is NOT yet logged in (must verify email first)
