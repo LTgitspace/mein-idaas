@@ -1,432 +1,314 @@
-# Mein IDaaS - Personal Identity-as-a-Service
+# Mein IDaaS — Self-Hosted Identity-as-a-Service
 
-A lightweight, enterprise-free Identification-as-a-Service (IDaaS) platform built with Go and PostgreSQL. Strip away the bloatware and get a clean, minimal authentication and authorization system tailored for personal use.
+A lightweight, self-hosted authentication and identity management server built with Go, Fiber, and PostgreSQL. Designed as a capstone project demonstrating modern auth infrastructure: JWT with RSA-256, refresh token rotation with theft detection, TOTP-based MFA, email verification, and role-based access control.
 
-## Overview
+## Features
 
-Mein IDaaS provides a self-hosted alternative to enterprise IDaaS solutions like Okta or Azure AD. Perfect for developers who want:
-
-- User management with email verification
-- JWT-based authentication with RSA-256 signing
-- Token rotation every 7 days with grace period for enhanced security
-- Multi-Factor Authentication (MFA) via TOTP (Google Authenticator, Microsoft Authenticator, Authy)
-- Secure password hashing with Argon2id
-- Password reset flow with OTP validation
-- Email delivery with SMTP
-- Role-based access control (RBAC)
-- Rate limiting with IP ban functionality
-- Built-in Swagger API documentation
-- PostgreSQL persistence with GORM ORM
-- Request timing metrics for performance monitoring
+| Feature | Implementation |
+|---|---|
+| **User Registration & Login** | Argon2id password hashing, email/password auth |
+| **Email Verification** | 6-digit OTP via SMTP, 5-minute TTL, in-memory store |
+| **JWT Authentication** | RS256 (asymmetric RSA key pair), 15-min access + 7-day refresh tokens |
+| **Refresh Token Rotation** | Automatic rotation with reuse detection, grace period, and theft lockdown |
+| **MFA (TOTP)** | QR code enrollment, compatible with Google/Microsoft Authenticator, Authy |
+| **Password Management** | Change password (old password + OTP), forgot password reset flow |
+| **RBAC** | Role-based access control with user-role many-to-many mapping |
+| **Rate Limiting** | 10 req/s per IP, 10-minute auto-ban on violation |
+| **Request Metrics** | Every request logged with method, path, status, and duration |
+| **API Docs** | Auto-generated Swagger/OpenAPI at `/swagger/` |
+| **Docker Support** | Multi-stage Dockerfile + docker-compose with PostgreSQL 16 |
 
 ## Architecture
 
-The project follows a clean layered architecture:
+```
+┌─────────────────────────────────┐
+│         HTTP Layer              │
+│   Fiber (controllers, routes)    │
+├─────────────────────────────────┤
+│       Middleware Layer          │
+│   RateLimiter, TimerMetrics      │
+├─────────────────────────────────┤
+│        Service Layer            │
+│   Auth, Verification, Email     │
+├─────────────────────────────────┤
+│      Repository Layer           │
+│   User, Credential, Token, Role │
+├─────────────────────────────────┤
+│          Database               │
+│   PostgreSQL (via GORM)         │
+└─────────────────────────────────┘
+```
 
-```
-  HTTP Controllers
-   (Request/Response Handling)
-             |
-        Service Layer
-     (Business Logic)
-             |
-      Repository Layer
-    (Data Access / CRUD)
-             |
-      PostgreSQL Database
-```
+Technology choices:
+- **Go 1.25** — statically typed, compiled language
+- **Fiber v2** — high-performance HTTP framework (fasthttp-based)
+- **GORM** — ORM for PostgreSQL with auto-migration
+- **RS256 JWT** — asymmetric signing (no shared secret)
+- **Argon2id** — OWASP-recommended password hashing
+- **Docker** — reproducible builds and deployments
 
 ## Project Structure
 
 ```
 mein-idaas/
-├── main.go                 # Application entry point
-├── go.mod & go.sum        # Dependency management
-├── refresh_token_flow.md  # Token rotation documentation
-├── README.md              # This file
+├── main.go                     # Entry point, route registration, DI wiring
+├── go.mod / go.sum             # Dependency management
+├── Dockerfile                  # Multi-stage build (Alpine)
+├── docker-compose.yml          # App + PostgreSQL orchestration
 │
 ├── controller/
-│   ├── AuthController.go        # Register, Login, Refresh, MFA endpoints
+│   ├── AuthController.go       # Register, login, refresh, MFA, password flows
 │   └── VerificationController.go # Email verification endpoints
 │
 ├── service/
-│   ├── AuthService.go           # Core authentication & authorization
-│   ├── VerificationService.go   # Email & OTP verification logic
-│   └── EmailService.go          # Email sending (SMTP)
+│   ├── AuthService.go          # Core auth business logic (440+ lines)
+│   ├── VerificationService.go  # OTP generation, storage, validation
+│   ├── EmailService.go         # SMTP email sending (gomail v2)
+│   └── LinkCredentialService.go # External OAuth credential linking (WIP)
 │
 ├── repository/
-│   ├── UserRepository.go                    # User CRUD
-│   ├── CredentialRepository.go              # Password & credential storage
-│   ├── RefreshTokenRepository.go            # Refresh token management
-│   ├── RoleRepository.go                    # Role queries
-│   ├── VerificationRepository.go            # Verification code storage
-│   └── InMemoryVerificationRepository.go    # In-memory OTP cache (5min TTL)
+│   ├── Repository.go           # Interface definitions
+│   ├── UserRepository.go       # User CRUD
+│   ├── CredentialRepository.go # Password/credential storage
+│   ├── RefreshTokenRepository.go # Token lifecycle (create, update, delete expired)
+│   ├── RoleRepository.go       # Role queries and seeding
+│   └── InMemoryVerificationRepository.go # OTP cache with TTL
 │
 ├── model/
-│   ├── User.go         # User entity with roles, MFA, email verification
-│   ├── Credential.go   # Password credentials (Argon2 hashed)
-│   ├── RefreshTokens.go # Refresh token storage with rotation tracking
-│   ├── Role.go         # Role definitions (user, admin, etc.)
-│   ├── AuthClaims.go   # JWT claims structure
-│   └── Enums.go        # Enum types
+│   ├── User.go                 # User entity (UUID, MFA fields, email verified flag)
+│   ├── Credential.go           # Typed credentials (password, google, github, etc.)
+│   ├── RefreshTokens.go        # Token with rotation family tree tracking
+│   ├── Role.go                 # Role entity (code, name, system flag)
+│   └── Enums.go                # CredentialType enum (password, google, facebook, github, zalo)
 │
 ├── dto/
-│   ├── Auth.go    # Auth request/response DTOs
-│   └── Verify.go  # Verification request/response DTOs
+│   ├── Auth.go                 # Register, login, refresh, MFA, password DTOs
+│   ├── AuthClaims.go           # JWT claims structure (roles + registered claims)
+│   └── Verify.go               # Email verification DTOs
 │
 ├── middleware/
-│   ├── RateLimiter.go       # IP-based rate limiting with ban functionality
-│   └── TimerMetrics.go      # Request duration tracking
+│   ├── RateLimiter.go          # IP-based rate limiting with ban storage
+│   └── TimerMetrics.go         # Request duration logging
 │
 ├── util/
-│   ├── env.go              # Environment variable loading
-│   ├── DButil.go           # Database initialization
-│   ├── Auth_helpers.go     # Argon2 hashing & verification
-│   ├── JWT_generator.go    # Token generation (RSA-256)
-│   ├── token_verify.go     # Token validation
-│   ├── RSA.go              # RSA key management
-│   ├── OTP.go              # OTP generation
-│   ├── TOTP.go             # TOTP generation & QR codes
-│   ├── CronJob.go          # Background cleanup jobs
-│   ├── Validator.go        # Input validation
-│   └── Error.go            # Error utilities
+│   ├── Auth_helpers.go         # Argon2id hashing & password comparison
+│   ├── DButil.go               # PostgreSQL connection initialization
+│   ├── JWT_generator.go        # Token pair generation (RS256)
+│   ├── token_verify.go         # JWT parsing and validation
+│   ├── RSA.go                  # RSA key loading from environment variables
+│   ├── OTP.go                  # Random digit code generation
+│   ├── TOTP.go                 # TOTP secret + QR code generation (pquerna/otp)
+│   ├── CronJob.go              # Daily expired token cleanup
+│   ├── Validator.go            # Input validation (go-playground/validator)
+│   ├── Error.go                # Error response helpers
+│   └── env.go                  # Environment variable helpers
 │
 ├── seeder/
-│   └── RoleSeeder.go  # Initialize default roles
+│   └── RoleSeeder.go           # Seeds default roles (user, admin)
 │
-├── docs/
-│   ├── docs.go        # Swagger documentation
+├── docs/                       # Auto-generated Swagger specs
+│   ├── docs.go
 │   ├── swagger.json
 │   └── swagger.yaml
 │
-├── config/
-│   └── Configuration files
-│
-├── Dockerfile         # Docker image definition
-├── docker-compose.yml # Docker Compose setup
-├── .env               # Environment variables (not in git)
-├── .env.example       # Environment template
-└── LICENSE
+└── config/                     # Reserved for future config files
 ```
+
+## Data Model
+
+### Entity Relationships
+
+```
+User (1) ────────< Credential (many)     — typed credentials per user
+User (1) ────────< RefreshToken (many)   — token family tree
+User (M) ────────> Role (N)             — many-to-many via user_roles
+```
+
+### Key Fields
+
+**User** — `id` (UUID), `name`, `email` (unique), `is_email_verified`, `is_mfa_enabled`, `mfa_secret`, `backup_codes`, timestamps
+
+**Credential** — `id`, `user_id`, `type` (enum: password/google/facebook/github/zalo), `value` (hashed), `active`
+
+**RefreshToken** — `id`, `user_id`, `token_hash` (SHA-256), `expires_at`, `replaced_at` (rotation timestamp), `replaced_by_token_id` (family link), `revoked_at`, `client_ip`, `user_agent`
+
+**Role** — `id`, `code` (unique), `name`, `description`, `is_system`
 
 ## Authentication Flow
 
-### Complete User Journey
-
+### 1. Registration
 ```
-1. REGISTER
-   POST /api/v1/auth/register
-   ├─ Create user account
-   ├─ Hash password with Argon2id
-   ├─ Assign default "user" role
-   └─ Send verification email (async)
-
-2. VERIFY EMAIL
-   POST /api/v1/auth/verify
-   ├─ Submit email + 6-digit OTP code
-   ├─ Validate code (5-minute TTL)
-   └─ Mark user as email-verified
-
-3. LOGIN
-   POST /api/v1/auth/login
-   ├─ Check credentials (Argon2 verification)
-   ├─ Check if email is verified
-   ├─ If not verified: send email, return 403
-   ├─ If verified: issue tokens, return 200
-   └─ Store refresh token hash in DB
-
-4. USE ACCESS TOKEN
-   GET /api/v1/protected
-   ├─ Authorization: Bearer <access_token>
-   ├─ Server validates JWT signature (RSA public key)
-   ├─ Extract user_id & roles from token claims
-   └─ Process request
-
-5. REFRESH TOKENS (every 7 days)
-   POST /api/v1/auth/refresh
-   ├─ Send refresh token cookie
-   ├─ Validate token exists & not revoked
-   ├─ Check for theft (grace period logic)
-   ├─ Issue new token pair
-   ├─ Revoke old refresh token
-   └─ Return new access token
-
-6. RESEND VERIFICATION
-   POST /api/v1/auth/resend
-   ├─ Email already registered
-   └─ Send new OTP code
+POST /api/v1/auth/register
+├── Validates input (name 2-50 chars, email format, password 8-72 chars)
+├── Creates user with Argon2id-hashed password
+├── Assigns default "user" role
+├── Sends verification email with 6-digit OTP (async)
+└── Returns 201 with user ID, name, email
 ```
 
-### Token Lifecycle
-
+### 2. Email Verification
 ```
-Day 0 - User Logs In
-├─ Access Token (15 minutes) ────────┐
-│                                     │
-├─ Refresh Token (7 days) ───────────┤
-│   └─ Stored hashed in DB           │
-│   └─ Can be revoked                │
-│                                     │
-Day 0-7: Use Access Token for API calls
-
-Day 7: Access Token Expires
-├─ Client sends Refresh Token
-├─ Server validates & marks old as replaced
-├─ Issues NEW Access Token (15 min)
-├─ Issues NEW Refresh Token (7 days)
-│
-...Repeat every 7 days
+POST /api/v1/auth/verify
+├── Validates email + 6-digit code
+├── Checks in-memory store (5-minute TTL)
+├── Marks is_email_verified = true
+└── Deletes used code (prevents replay)
 ```
 
-### Token Rotation with Grace Period
-
-The system implements a **10-second grace period** to handle network race conditions:
-
+### 3. Login
 ```
-Normal Refresh (First time):
-├─ Send refresh token (Token A)
-├─ Server issues new pair
-├─ Mark Token A as "replaced_at" = NOW()
-├─ Return new Token B
-
-Concurrent Request (within 10 seconds):
-├─ Client retries with Token A again
-├─ Server sees "replaced_at" is set
-├─ Check: duration = NOW() - replaced_at < 10 seconds
-├─ Result: Within grace period, return Token B (safe retry)
-
-Replay Attack (after 10 seconds):
-├─ Attacker uses old Token A
-├─ Server sees duration > 10 seconds
-├─ Result: REJECTED - "refresh token reuse detected"
-└─ Account is locked for security
+POST /api/v1/auth/login
+├── Looks up user by email
+├── Finds password credential (type: "password")
+├── Verifies with Argon2id comparison
+├── Checks is_email_verified (returns 403 + resends OTP if false)
+├── Generates RS256 JWT access token (15 min) + refresh token (7 days)
+├── Stores refresh token hash in DB (SHA-256)
+└── Returns token pair + expires_in in JSON body
 ```
 
-### Password Hashing with Argon2id
-
-Passwords are hashed using Argon2id (OWASP-recommended):
-
-Parameters (configurable via env vars):
-- Time: 3 iterations (ARGON2_TIME)
-- Memory: 64MB (ARGON2_MEMORY in KB)
-- Threads: 4 (ARGON2_THREADS)
-- Key Length: 32 bytes (ARGON2_KEY_LENGTH)
-- Salt Length: 16 bytes (ARGON2_SALT_LENGTH)
-
-IMPORTANT: Do NOT change Argon2 parameters after users register!
-
-Changing parameters will invalidate all existing password hashes. Your users will be unable to login.
-
-The hash stores its parameters internally, so validation always uses the parameters that created the hash (backward compatible).
-
-Example hash format:
+### 4. Token Refresh (with Rotation Detection)
 ```
-$argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>
-```
+POST /api/v1/auth/refresh
+├── Parses refresh token JWT → extracts user_id + token_id
+├── Loads token from DB by ID
+├── Security checks: user match, not revoked, not expired
 
-## Multi-Factor Authentication (MFA)
+├── FIRST USE (replaced_at is null):
+│   ├── Generates NEW access + refresh token pair
+│   ├── Saves new token to DB
+│   ├── Marks old token: replaced_at = now(), replaced_by_token_id = new_id
+│   └── Returns new pair
 
-MFA adds an extra layer of security by requiring a one-time password (OTP) in addition to the regular password. This implementation uses TOTP (Time-based One-Time Password) algorithm, compatible with authenticator apps like Google Authenticator, Microsoft Authenticator, and Authy.
+├── GRACE PERIOD RETRY (within 10s of replacement):
+│   ├── Detected: replaced_at is set, within grace window
+│   ├── Finds child token via replaced_by_token_id
+│   ├── Issues ONLY a new access token (reuses existing child refresh token)
+│   └── Returns access token + re-signed child refresh token
 
-### TOTP-based MFA (Time-based One-Time Password)
-
-Supported authenticator apps:
-- Google Authenticator
-- Microsoft Authenticator
-- Authy
-- Any RFC 6238 compliant app
-
-### MFA Enrollment Flow
-
-1. USER REQUESTS MFA SETUP
-   POST /api/v1/auth/mfa/setup
-   - Reads access token from Authorization header
-   - Server validates email is verified (403 if not)
-   - If not verified, sends verification email
-   - Generates TOTP secret
-
-2. DISPLAY QR CODE
-   GET /api/v1/auth/mfa/qrcode/base64
-   - Returns base64-encoded PNG image
-   - User scans with authenticator app
-   - App generates 6-digit codes every 30 seconds
-
-3. VERIFY AND ACTIVATE
-   POST /api/v1/auth/mfa/verify
-   - User enters 6-digit code from app
-   - Server validates code against TOTP secret
-   - Generates 5 backup codes for account recovery
-   - Stores secret & backup codes encrypted
-   - Marks IsMFAEnabled=true
-   - Returns backup codes (save securely)
-
-4. LOGIN WITH MFA
-   POST /api/v1/auth/login
-   - Standard login (email + password)
-   - If MFA enabled: server returns 202 Accepted
-   - Client must follow up with TOTP code
-
-   POST /api/v1/auth/mfa/verify-login
-   - Send 6-digit code from authenticator
-   - If valid: issue tokens
-   - If backup code: mark it as used
-
-## Password Reset Flow
-
-1. REQUEST PASSWORD RESET
-   POST /api/v1/auth/password-reset/request
-   - User submits email
-   - If email exists: send OTP (async, user doesn't see confirmation)
-   - If email not found: still return 200 (security: don't reveal accounts)
-   - Server logs: "email not found: user@example.com"
-   - OTP valid for 5 minutes
-
-2. RESET PASSWORD WITH OTP
-   POST /api/v1/auth/password-reset/verify
-   - User submits email + OTP + new password
-   - Validate OTP (must match email)
-   - If valid: hash new password with Argon2
-   - Update password in DB
-   - Clear all refresh tokens (force re-login everywhere)
-   - Send confirmation email
-
-## Rate Limiting
-
-IP-based rate limiting with automatic bans:
-
-Configuration:
-- Limit: 10 requests per second
-- Ban duration: 10 minutes
-- Storage: In-memory with cleanup
-
-Request exceeding limit:
-├─ Count tracked per IP
-├─ 11th request in same second: IP banned
-├─ Banned responses: 429 Too Many Requests
-└─ Ban auto-expires after 10 minutes
-
-Note: Rate limiter applies to all routes globally.
-
-## Swagger API Documentation
-
-Auto-generated OpenAPI documentation available at:
-```
-http://localhost:4000/swagger/
+└── THEFT DETECTED (replay after grace period):
+    └── Returns 401: "refresh token reuse detected: account locked for security"
 ```
 
-All endpoints documented with:
-- Request/response examples
-- Parameter descriptions
-- Error codes and meanings
-- Authentication requirements
-
-## Request Timing Metrics
-
-All endpoints automatically tracked for response time.
-
-Middleware logs: [TIMER] {method} {path} - {duration_ms}ms
-
-Example:
+### 5. MFA Setup (TOTP)
 ```
-[TIMER] POST /api/v1/auth/login - 42ms
-[TIMER] GET /api/v1/auth/mfa/qrcode/base64 - 15ms
+POST /api/v1/auth/mfa/setup
+├── Generates TOTP secret (base32)
+├── Returns secret + QR code URL
+
+GET /api/v1/auth/mfa/qrcode?email=...&secret=...
+├── Returns QR code as PNG image (256x256)
+
+GET /api/v1/auth/mfa/qrcode/base64?email=...&secret=...
+├── Returns QR code as base64-encoded JSON
+
+POST /api/v1/auth/mfa/confirm
+├── Validates TOTP token against secret
+├── Saves secret to user record
+├── Sets is_mfa_enabled = true
+└── Returns success
+```
+
+### 6. Password Change
+```
+POST /api/v1/auth/password-change/send-otp
+├── Sends 6-digit OTP to user's email
+
+POST /api/v1/auth/password-change
+├── Validates old password + OTP + new password
+├── Hashes new password (Argon2id)
+├── Updates credential in DB
+└── Returns success
+```
+
+### 7. Forgot Password Reset
+```
+POST /api/v1/auth/forgot-password/send-otp
+├── Always returns 200 (prevents email enumeration)
+├── Silently logs if email not found
+└── Sends OTP if account exists
+
+POST /api/v1/auth/forgot-password/reset
+├── Validates email + OTP
+├── Generates random 8-char temporary password
+├── Hashes and updates credential
+├── Emails temporary password to user
+└── Returns success (user should change password after login)
 ```
 
 ## Configuration
 
 ### Environment Variables
 
-Create a `.env` file in the project root:
+All configuration is done via environment variables (no config files). Create a `.env` file:
 
 ```env
-# Database
-DB_DSN=postgres://user:password@localhost:5432/mein_idaas
+# ── Application ─────────────────────────────
+PORT=4000
+APP_NAME=mein-idaas
+ENV=development                  # "production" enables strict TLS for SMTP
 
-# SMTP (Email)
+# ── Database ────────────────────────────────
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=your_db_password
+DB_NAME=idaas
+DB_SSLMODE=disable
+
+# ── RSA Keys (PEM format) ──────────────────
+# Keys are loaded as PEM strings from env vars, NOT file paths.
+# Use \n for line breaks, or literal newlines if supported.
+RSA_PRIVATE_KEY=-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAK...\n-----END RSA PRIVATE KEY-----
+RSA_PUBLIC_KEY=-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkq...\n-----END PUBLIC KEY-----
+
+# ── JWT ────────────────────────────────────
+JWT_ACCESS_TTL=15m               # Access token lifetime
+JWT_REFRESH_TTL=168h             # Refresh token lifetime (7 days)
+REFRESH_GRACE_PERIOD=10s         # Concurrency safety window
+JWT_ISSUER=mein-idaas
+
+# ── Argon2id Password Hashing ──────────────
+ARGON2_TIME=3                    # Iterations
+ARGON2_MEMORY=65536              # Memory in KB (64 MB)
+ARGON2_THREADS=4                 # Parallelism
+ARGON2_KEY_LENGTH=32             # Hash output bytes
+ARGON2_SALT_LENGTH=16            # Salt bytes
+
+# ── SMTP (Email) ───────────────────────────
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=your-email@gmail.com
-SMTP_PASS=your-app-password
-SMTP_FROM=noreply@your-domain.com
-
-# JWT & Tokens
-JWT_ACCESS_TTL=15m
-JWT_REFRESH_TTL=168h
-JWT_ISSUER=mein-idaas
-JWT_AUDIENCE=my-game-server,smoking-app
-
-# Argon2 Password Hashing
-ARGON2_TIME=3
-ARGON2_MEMORY=65536
-ARGON2_THREADS=4
-ARGON2_KEY_LENGTH=32
-ARGON2_SALT_LENGTH=16
-
-# RSA Keys (for JWT signing)
-RSA_PRIVATE_KEY_PATH=/path/to/private_key.pem
-RSA_PUBLIC_KEY_PATH=/path/to/public_key.pem
-
-# App Settings
-APP_NAME=mein-idaas
-PORT=4000
-COOKIE_PATH=/api/v1/auth
+SMTP_PASS=your-app-password      # Gmail: use App Password with 2FA
+SMTP_SENDER_NAME=Mein IDaaS
 ```
 
 ### Generating RSA Keys
 
-Create RSA key pair for JWT signing:
-
 ```bash
-# Generate private key (PKCS#8 format)
+# Generate private key
 openssl genrsa -out private_key.pem 2048
-openssl pkcs8 -topk8 -nocrypt -in private_key.pem -out private_key.pem
+
+# Convert to PKCS#8 (if needed)
+openssl pkcs8 -topk8 -nocrypt -in private_key.pem -out private_key_pkcs8.pem
 
 # Extract public key
 openssl rsa -in private_key.pem -pubout -out public_key.pem
 ```
 
-Store paths in `RSA_PRIVATE_KEY_PATH` and `RSA_PUBLIC_KEY_PATH`.
-
-### Key Format Troubleshooting
-
-Error: "failed to parse private key: x509: failed to parse private key (use ParsePKCS8PrivateKey instead for this key format)"
-
-Cause: Key format mismatch (PKCS#1 vs PKCS#8).
-
-Solution - Convert PKCS#1 to PKCS#8:
-```bash
-openssl pkcs8 -topk8 -nocrypt -in key_pkcs1.pem -out key_pkcs8.pem
-```
-
-Solution - Convert PKCS#8 to PKCS#1:
-```bash
-openssl rsa -in key_pkcs8.pem -out key_pkcs1.pem
-```
-
-If storing keys in env vars, base64 encode to preserve newlines:
-
-Linux / WSL:
-```bash
-base64 -w0 private_key.pem > private_key.b64
-```
-
-PowerShell (Windows):
-```powershell
-[Convert]::ToBase64String([IO.File]::ReadAllBytes('C:\path\to\private_key.pem')) | Set-Clipboard
-```
+The application supports both **PKCS#1** and **PKCS#8** private key formats. Key content (including `-----BEGIN/END-----` markers) must be provided as the full PEM string in the environment variable. Use `\n` to represent newlines if your environment doesn't support literal line breaks.
 
 ### SMTP Configuration Examples
 
-Gmail (with App Password):
+**Gmail** (requires App Password with 2FA enabled):
 ```env
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
-SMTP_USER=your-email@gmail.com
+SMTP_USER=you@gmail.com
 SMTP_PASS=your-16-char-app-password
 ```
-Note: Enable "Less secure app access" or use App Passwords with 2FA
 
-Self-hosted SMTP:
+**Self-hosted / other provider:**
 ```env
 SMTP_HOST=mail.example.com
 SMTP_PORT=587
@@ -434,1340 +316,210 @@ SMTP_USER=noreply@example.com
 SMTP_PASS=your-password
 ```
 
-TLS / SSL Note:
-- Port 587: STARTTLS (plaintext connection upgraded to TLS)
-- Port 465: Implicit TLS (connect with TLS from start)
-- Port 25: No TLS (not recommended for external servers)
+TLS certificate validation: In `development` mode (`ENV=development`), self-signed certs are accepted. In `production` mode, strict certificate validation is enforced.
 
-For Gmail and most modern SMTP servers, TLS is automatically handled. You do NOT need a self-signed certificate to send mail.
+## Quick Start
 
-## Quick Start (Local - Windows)
+### Prerequisites
 
-1. Set environment variables (PowerShell):
-```powershell
-$env:DB_DSN="postgres://user:pass@localhost:5432/mein_idaas"
-$env:SMTP_HOST="smtp.gmail.com"
-$env:SMTP_PORT="587"
-$env:SMTP_USER="you@gmail.com"
-$env:SMTP_PASS="your-app-password"
-$env:SMTP_FROM="noreply@example.com"
-$env:RSA_PRIVATE_KEY_PATH="C:\path\to\private_key.pem"
-$env:RSA_PUBLIC_KEY_PATH="C:\path\to\public_key.pem"
-```
+- Go 1.25+
+- PostgreSQL 16+
+- RSA key pair
+- SMTP credentials (for email verification)
 
-2. Install dependencies:
+### Local Setup
+
 ```bash
+# 1. Clone
+git clone <repo-url>
+cd mein-idaas
+
+# 2. Install dependencies
 go mod download
-```
 
-3. Run:
-```bash
+# 3. Create .env file with required variables (see Configuration section above)
+
+# 4. Create PostgreSQL database
+psql -U postgres -c "CREATE DATABASE idaas;"
+
+# 5. Run
 go run main.go
 ```
 
-4. Access Swagger:
-```
-http://localhost:4000/swagger/
-```
+Server starts on `http://localhost:4000`.
 
-## Quick Start (Docker)
+### Docker Setup
 
-1. Create .env file with your configuration (see Configuration section)
-
-2. Start with Docker Compose:
 ```bash
+# Create .env file, then:
 docker-compose up --build
 ```
 
-3. Database will initialize automatically
-4. Access Swagger at http://localhost:4000/swagger/
+This starts both PostgreSQL 16 and the application. Database schema is auto-migrated and default roles are seeded on startup.
 
-## Docker Notes
+### Verify
 
-The Dockerfile:
-- Builds Go binary
-- Injects environment variables at runtime
-- Exposes port 4000
-- Requires database connection via env var
+```bash
+curl http://localhost:4000/health
+# {"status":"ok"}
+```
 
-## Security Considerations
-
-### Email Verification
-
-- Tokens are NOT generated during email verification
-- Verification only marks `user.IsEmailVerified = true`
-- Login fails if email not verified
-- Automatic verification email sent on first login attempt
-- OTP codes expire in 5 minutes
-
-### Token Security
-
-- Access tokens: 15-minute expiry (memory/cookie)
-- Refresh tokens: 7-day expiry (secure HttpOnly cookie)
-- JWT signed with RSA-256 (asymmetric)
-- Refresh tokens hashed in database (bcrypt)
-- Token rotation on every refresh
-- Grace period prevents race condition attacks
-
-### Password Security
-
-- Argon2id hashing (OWASP 2023 recommendation)
-- 16-byte random salt per password
-- Configurable iteration count (prevents brute force)
-- Passwords never stored in logs or error messages
-
-### MFA Security
-
-- TOTP secrets stored encrypted in database
-- Backup codes for account recovery
-- 6-digit codes: 30-second validity window
-- Compatible with all RFC 6238 authenticators
-
-### Rate Limiting
-
-- 10 requests per second per IP
-- 10-minute ban on exceeding limit
-- Prevents brute force and DoS attacks
-
-### CORS & TLS
-
-- TLS enforcement in production (Secure cookie flag)
-- For localhost development: set Secure=false if needed
-- HttpOnly cookies prevent XSS token theft
-- SameSite=Strict prevents CSRF
-
-### Database Pooling
-
-- GORM handles connection pooling automatically
-- Concurrent request support via connection pool
-- Cascade deletes for data consistency
+Swagger UI: `http://localhost:4000/swagger/`
 
 ## API Endpoints
 
+All endpoints are prefixed with `/api/v1` unless noted otherwise.
+
+### Health
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check |
+
 ### Authentication
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/auth/register` | None | Register new user |
+| `POST` | `/auth/verify` | None | Verify email with OTP |
+| `POST` | `/auth/resend` | None | Resend verification OTP |
+| `POST` | `/auth/login` | None | Login, returns token pair |
+| `POST` | `/auth/refresh` | None | Rotate refresh token |
 
-#### 1. Register User
-**POST** `/api/v1/auth/register`
+### MFA
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/auth/mfa/setup` | None | Generate TOTP secret + QR URL |
+| `GET` | `/auth/mfa/qrcode` | None | Get QR code as PNG image |
+| `GET` | `/auth/mfa/qrcode/base64` | None | Get QR code as base64 JSON |
+| `POST` | `/auth/mfa/confirm` | None | Verify TOTP and enable MFA |
 
-**Request:**
-```json
-{
-  "name": "John Doe",
-  "email": "john@example.com",
-  "password": "SecurePassword123!"
-}
+### Password Management
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/auth/password-change/send-otp` | None | Send OTP to change password |
+| `POST` | `/auth/password-change` | None | Change password (old pw + OTP) |
+| `POST` | `/auth/forgot-password/send-otp` | None | Request password reset OTP |
+| `POST` | `/auth/forgot-password/reset` | None | Reset password with OTP |
+
+> **Note:** Authentication middleware is not currently applied to routes. All endpoints are publicly accessible. Token validation logic exists in `util/token_verify.go` and can be wired into a middleware for protected routes.
+
+### Example: Register → Verify → Login
+
+```bash
+# 1. Register
+curl -X POST http://localhost:4000/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Alice","email":"alice@example.com","password":"SecurePass123!"}'
+
+# Response: {"id":"uuid","name":"Alice","email":"alice@example.com"}
+
+# 2. Verify email (check inbox for 6-digit code)
+curl -X POST http://localhost:4000/api/v1/auth/verify \
+  -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com","code":"123456"}'
+
+# Response: {"message":"email verified"}
+
+# 3. Login
+curl -X POST http://localhost:4000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com","password":"SecurePass123!"}'
+
+# Response: {"access_token":"eyJ...","refresh_token":"eyJ...","expires_in":900}
 ```
-
-**Response (201 Created):**
-```json
-{
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "name": "John Doe",
-  "email": "john@example.com"
-}
-```
-
-**What Happens:**
-- User account is created in database
-- Password is hashed with Argon2id
-- Default "user" role is assigned
-- Verification email with OTP is sent (asynchronously)
-- User is NOT yet logged in (must verify email first)
-
----
-
-#### 2. Resend Verification Email
-**POST** `/api/v1/auth/resend`
-
-**Request:**
-```json
-{
-  "email": "john@example.com"
-}
-```
-
-**Response (202 Accepted):**
-```json
-{
-  "message": "verification code sent"
-}
-```
-
-**Status Codes:**
-- 202 - Email sent successfully (async)
-- 404 - User not found
-- 400 - Invalid email format
-- 500 - Failed to send email
-
----
-
-#### 3. Verify Email with OTP
-**POST** `/api/v1/auth/verify`
-
-**Request:**
-```json
-{
-  "email": "john@example.com",
-  "code": "123456"
-}
-```
-
-**Response (200 OK):**
-```json
-{
-  "message": "email verified"
-}
-```
-
-**Status Codes:**
-- 200 - Email verified, account activated
-- 401 - Invalid or expired OTP code
-- 404 - User not found
-- 400 - Invalid request format
-
-**What Happens:**
-- OTP code is validated (6 digits, 5-minute TTL)
-- User's `isEmailVerified` flag is set to true
-- User can now login
-
----
-
-#### 4. Login
-**POST** `/api/v1/auth/login`
-
-**Request:**
-```json
-{
-  "email": "john@example.com",
-  "password": "SecurePassword123!"
-}
-```
-
-**Response (200 OK) - Email Verified:**
-```json
-{
-  "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "refresh_token": "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
-  "expires_in": 900
-}
-```
-
-**Response (403 Forbidden) - Email Not Verified:**
-```json
-{
-  "error": "email not verified",
-  "message": "verification email has been sent to your email address"
-}
-```
-
-**Headers Set:**
-```
-Set-Cookie: refresh_token=a1b2c3d4...; HttpOnly; Secure; SameSite=Strict; Path=/api/v1/auth
-```
-
-**What Happens:**
-- Credentials are validated
-- Email verification status is checked
-- If NOT verified: verification email is sent, 403 returned
-- If verified: tokens are issued, refresh token stored in HTTP-only cookie
-
----
-
-#### 5. Refresh Tokens
-**POST** `/api/v1/auth/refresh`
-
-**Headers:**
-```
-Cookie: refresh_token=a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
-```
-
-**Response (200 OK):**
-```json
-{
-  "access_token": "new_access_token_here",
-  "refresh_token": "new_refresh_token_here",
-  "expires_in": 900
-}
-```
-
-**Response (401 Unauthorized):**
-```json
-{
-  "error": "refresh token reuse detected: account locked for security"
-}
-```
-
-**Server Actions:**
-- Validates refresh token exists & not revoked
-- Checks 10-second grace period for concurrent requests
-- Detects theft/replay attacks
-- Generates new token pair
-- Marks old token as "replaced"
-- Issues new refresh token (7-day TTL)
-
----
-
-#### 6. Health Check
-**GET** `/health`
-
-**Response (200 OK):**
-```json
-{
-  "status": "ok"
-}
-```
-
----
-
-#### 7. Send Password Change OTP
-**POST** `/api/v1/auth/password-change/send-otp`
-
-**Headers:**
-```
-Authorization: Bearer <access_token>
-```
-
-**Response (200 OK):**
-```json
-{
-  "message": "OTP sent to your email",
-  "email": "john@example.com"
-}
-```
-
-**Status Codes:**
-- 200 - OTP sent successfully
-- 401 - Invalid or missing access token
-- 404 - User not found
-- 500 - Failed to send email
-
-**What Happens:**
-- Validates access token and extracts user ID
-- Generates 6-digit OTP code
-- Sends OTP to user's registered email
-- OTP valid for 5 minutes
-
----
-
-#### 8. Change Password
-**POST** `/api/v1/auth/password-change`
-
-**Headers:**
-```
-Authorization: Bearer <access_token>
-```
-
-**Request:**
-```json
-{
-  "old_password": "OldPassword123!",
-  "new_password": "NewPassword456!",
-  "otp_code": "123456"
-}
-```
-
-**Response (200 OK):**
-```json
-{
-  "message": "password changed successfully",
-  "email": "john@example.com"
-}
-```
-
-**Status Codes:**
-- 200 - Password changed successfully
-- 400 - Invalid OTP or passwords don't meet requirements
-- 401 - Invalid/expired token or wrong old password
-- 500 - Internal server error
-
-**What Happens:**
-- Validates access token
-- Verifies OTP code (must be valid and not expired)
-- Validates old password is correct
-- Ensures new password is different from old
-- Hashes new password with Argon2
-- Updates password credential in database
-- OTP is consumed and cannot be reused
-
----
-
-#### 9. Send Forgot Password OTP
-**POST** `/api/v1/auth/forgot-password/send-otp`
-
-**Request:**
-```json
-{
-  "email": "john@example.com"
-}
-```
-
-**Response (200 OK):**
-```json
-{
-  "message": "if email exists, a password reset code has been sent"
-}
-```
-
-**Status Codes:**
-- 200 - Always returns 200 (even if email doesn't exist)
-- 400 - Invalid email format
-- 500 - Failed to send email
-
-**Security Note:** Returns 200 regardless of whether email exists in system. This prevents email enumeration attacks.
-
-**What Happens:**
-- Checks if email exists in system
-- If NOT found: Silently logs the request and returns success
-- If found: Generates 6-digit OTP code with 5-minute TTL
-- Sends OTP to user's email
-- OTP stored securely with user ID as key
-
----
-
-#### 10. Reset Password with OTP
-**POST** `/api/v1/auth/forgot-password/reset`
-
-**Request:**
-```json
-{
-  "email": "john@example.com",
-  "otp": "123456"
-}
-```
-
-**Response (200 OK):**
-```json
-{
-  "message": "password has been reset, check your email for the temporary password",
-  "email": "john@example.com"
-}
-```
-
-**Response (400 Bad Request):**
-```json
-{
-  "error": "invalid or expired OTP code"
-}
-```
-
-**Status Codes:**
-- 200 - Password reset successfully
-- 400 - Invalid/expired OTP code
-- 404 - User not found
-- 500 - Internal server error
-
-**What Happens:**
-- Validates email exists in system
-- Verifies OTP code (6 digits, 5-minute expiration)
-- Generates random 8-character temporary password
-- Hashes temporary password with Argon2
-- Updates user's password credential
-- Sends temporary password to user's email
-- OTP is consumed and deleted (prevents reuse)
-- User can now login with temporary password
-
-**Important:** User should change the temporary password immediately after login for security.
-
----
-
-#### 11. Setup MFA (Initiate)
-**POST** `/api/v1/auth/mfa/setup`
-
-**Headers:**
-```
-Authorization: Bearer <access_token>
-```
-
-**Response (200 OK):**
-```json
-{
-  "secret": "JBSWY3DPEBLW64TMMQ======",
-  "qr_code_url": "/auth/mfa/qrcode?email=john@example.com&secret=JBSWY3DPEBLW64TMMQ======"
-}
-```
-
-**Response (403 Forbidden) - Email Not Verified:**
-```json
-{
-  "error": "email not verified",
-  "message": "your email must be verified before setting up MFA. verification code has been sent to your email address."
-}
-```
-
-**Status Codes:**
-- 200 - TOTP secret generated successfully
-- 400 - Invalid access token format
-- 401 - Invalid or expired access token
-- 403 - Email not verified (OTP auto-sent to user)
-- 500 - Failed to generate secret
-
-**What Happens:**
-- Validates access token and extracts user ID
-- Checks if user's email is verified
-- If NOT verified: Automatically sends verification OTP to email, returns 403
-- If verified: Generates TOTP secret (base32 encoded)
-- Returns secret + QR code URL for authenticator enrollment
-
-**Important:** Email must be verified before MFA setup. If not, the system automatically sends a verification OTP.
-
----
-
-#### 12. Get MFA QR Code (PNG)
-**GET** `/auth/mfa/qrcode?email=john@example.com&secret=JBSWY3DPEBLW64TMMQ======`
-
-**Response (200 OK):**
-```
-PNG image file (256x256 pixels)
-```
-
-**Status Codes:**
-- 200 - QR code PNG image
-- 400 - Missing email or secret query parameters
-- 500 - Failed to generate QR code
-
-**What Happens:**
-- Generates a scannable QR code image from the TOTP secret
-- QR code encodes the secret in otpauth:// URL format
-- User scans with Google Authenticator, Microsoft Authenticator, Authy, or FreeOTP
-- Authenticator app displays 6-digit code that changes every 30 seconds
-
-**Supported Authenticator Apps:**
-- Google Authenticator
-- Microsoft Authenticator
-- Authy
-- FreeOTP
-- 1Password
-- LastPass Authenticator
-
----
-
-#### 13. Get MFA QR Code (Base64)
-**GET** `/auth/mfa/qrcode/base64?email=john@example.com&secret=JBSWY3DPEBLW64TMMQ======`
-
-**Response (200 OK):**
-```json
-{
-  "qr_code_base64": "iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAYAAABccqhmAAACN0lEQVR4nO3WQQrCQBRA0W..."
-}
-```
-
-**Status Codes:**
-- 200 - Base64-encoded QR code PNG
-- 400 - Missing email or secret query parameters
-- 500 - Failed to generate QR code
-
-**What Happens:**
-- Same as above endpoint, but returns base64-encoded PNG for JSON response
-- Useful for frontend applications that need to display QR code in-app
-- Can be used directly in `<img src="data:image/png;base64,..." />`
-
----
-
-#### 14. Confirm MFA (Verify & Enable)
-**POST** `/api/v1/auth/mfa/confirm`
-
-**Headers:**
-```
-Authorization: Bearer <access_token>
-```
-
-**Request:**
-```json
-{
-  "secret": "JBSWY3DPEBLW64TMMQ======",
-  "token": "123456"
-}
-```
-
-**Response (200 OK):**
-```json
-{
-  "message": "MFA enabled successfully"
-}
-```
-
-**Status Codes:**
-- 200 - MFA enabled on user account
-- 400 - Invalid TOTP token or invalid request payload
-- 401 - Invalid or expired access token
-- 500 - Failed to save MFA settings
-
-**What Happens:**
-- Validates access token and extracts user ID
-- Validates TOTP token against secret (6-digit code must be correct)
-- If invalid: Returns 400 with error message
-- If valid: Saves secret to user's account
-- Sets `IsMFAEnabled = true` on user record
-- MFA is now active for login
-
-**Important:** The 6-digit code is time-based and valid for approximately 30 seconds. If code expires, user must get a new code from authenticator app.
-
----
-
-## MFA Authentication Flow
-
-### Multi-Factor Authentication Setup
-```
-1. User is logged in (has access token)
-   └─ User email must be verified
-
-2. User calls POST /auth/mfa/setup
-   ├─ System checks if email is verified
-   ├─ If NOT verified:
-   │  ├─ System sends verification OTP (async)
-   │  └─ Returns 403 (user must verify email first)
-   ├─ If verified:
-   │  ├─ System generates TOTP secret
-   │  ├─ System creates QR code URL
-   │  └─ Returns 200 with secret + QR URL
-
-3. User gets QR code
-   ├─ Calls GET /auth/mfa/qrcode (to display PNG)
-   ├─ Or GET /auth/mfa/qrcode/base64 (for JSON response)
-   └─ System returns QR code image
-
-4. User scans QR code
-   ├─ User opens Google Authenticator / Microsoft Authenticator / Authy
-   ├─ User scans QR code
-   ├─ Authenticator app displays 6-digit code
-   └─ Code changes every 30 seconds
-
-5. User calls POST /auth/mfa/confirm
-   ├─ User provides secret + current 6-digit code
-   ├─ System validates TOTP token
-   ├─ If valid:
-   │  ├─ System saves secret to user account
-   │  ├─ System sets IsMFAEnabled = true
-   │  └─ Returns 200 (MFA enabled)
-   ├─ If invalid:
-   │  └─ Returns 400 (code incorrect or expired)
-   └─ MFA is now active
-```
-
-### MFA Backup & Recovery
-- Backup codes feature: Not yet implemented (planned for future)
-- Secret storage: Stored in plaintext in database (standard practice)
-- Lost authenticator: User must use password reset flow to regain access
-
----
-
-## Complete Authentication Flows
-
-### Registration & Email Verification
-```
-1. User calls POST /auth/register
-   ├─ System creates user account
-   ├─ System hashes password (Argon2)
-   ├─ System sends verification email with OTP (async)
-   └─ User receives OTP in email
-
-2. User calls POST /auth/verify
-   ├─ System validates OTP (6 digits, 5-minute TTL)
-   ├─ System marks user as email-verified
-   └─ User can now login
-
-3. User calls POST /auth/login
-   ├─ System validates credentials
-   ├─ System checks email is verified
-   ├─ System issues access token (15 minutes)
-   ├─ System issues refresh token (7 days, stored in HTTP-only cookie)
-   └─ User receives tokens and is logged in
-```
-
-### Password Change (Authenticated User)
-```
-1. User calls POST /auth/password-change/send-otp
-   ├─ System validates access token
-   ├─ System generates 6-digit OTP
-   ├─ System sends OTP to user's email
-   └─ User receives OTP
-
-2. User calls POST /auth/password-change
-   ├─ System validates access token
-   ├─ System validates OTP (6 digits, 5-minute TTL)
-   ├─ System verifies old password is correct
-   ├─ System hashes new password (Argon2)
-   ├─ System updates password in database
-   ├─ System deletes used OTP (prevents replay)
-   └─ Password is changed successfully
-```
-
-### Password Reset (Forgot Password)
-```
-1. User calls POST /auth/forgot-password/send-otp
-   ├─ User provides email address
-   ├─ System checks if email exists (silently logs if not)
-   ├─ System generates 6-digit OTP (5-minute TTL)
-   ├─ System sends OTP to email
-   └─ User receives OTP (if account exists)
-
-2. User calls POST /auth/forgot-password/reset
-   ├─ User provides email + OTP code
-   ├─ System validates OTP is correct and not expired
-   ├─ System generates random 8-character temporary password
-   ├─ System hashes temporary password (Argon2)
-   ├─ System updates password in database
-   ├─ System sends temporary password to email
-   ├─ System deletes used OTP
-   └─ User can now login with temporary password
-
-3. User calls POST /auth/login
-   ├─ User logs in with email + temporary password
-   ├─ System issues tokens
-   └─ User is logged in
-
-4. User calls POST /auth/password-change/send-otp
-   ├─ User changes temporary password to permanent one (recommended)
-   └─ Password is secured
-```
-
-### Token Rotation (Every 7 Days)
-```
-Day 0: User logs in
-├─ Access Token issued (15 minutes)
-├─ Refresh Token issued (7 days, stored in HTTP-only cookie)
-└─ Old refresh token stored hashed in DB
-
-Day 7: Access token expires during API call
-├─ Client calls POST /auth/refresh
-├─ Client sends refresh token cookie
-├─ Server validates refresh token exists & not revoked
-├─ Server checks 10-second grace period for concurrent requests
-├─ Server detects no theft (first time using token)
-├─ Server issues NEW access token (15 minutes)
-├─ Server issues NEW refresh token (7 days)
-├─ Server marks old token as "replaced"
-└─ Process repeats every 7 days...
-```
-
----
 
 ## JWT Token Structure
 
-### Access Token Payload
+### Access Token (RS256)
 ```json
 {
   "sub": "550e8400-e29b-41d4-a716-446655440000",
   "roles": ["user"],
   "iss": "mein-idaas",
-  "aud": ["my-game-server", "smoking-app"],
+  "aud": ["self-hosted-idaas"],
   "iat": 1703247200,
   "exp": 1703248100
 }
 ```
 
-**Fields:**
-- `sub` - Subject (user ID)
-- `roles` - User's assigned roles
-- `iss` - Issuer (mein-idaas)
-- `aud` - Audience (can be multiple services)
-- `iat` - Issued at (timestamp)
-- `exp` - Expires at (15 minutes from issue)
+- `sub` — User UUID
+- `roles` — Role codes for RBAC
+- `iss` — Issuer (configurable via `JWT_ISSUER`)
+- `aud` — Audience
+- `exp` — Expiration (configurable via `JWT_ACCESS_TTL`, default 15 min)
 
-### Refresh Token Storage (Database)
-```
-id: UUID
-user_id: UUID
-token_hash: bcrypt_hashed_token
-expires_at: 2025-12-30T12:00:00Z
-replaced_at: 2025-12-25T14:30:00Z (grace period marker)
-replaced_by_token_id: UUID (points to new token)
-revoked_at: null (null = active)
-client_ip: 192.168.1.1
-user_agent: Mozilla/5.0...
-created_at: 2025-12-23T12:00:00Z
-```
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- Go 1.25 or higher
-- PostgreSQL 16 or higher
-- Git
-- (Optional) Docker & Docker Compose
-
-### Installation
-
-#### Option 1: Local Setup
-
-1. Clone the repository:
-```bash
-git clone https://github.com/yourusername/mein-idaas.git
-cd mein-idaas
-```
-
-2. Install dependencies:
-```bash
-go mod download
-```
-
-3. Create `.env` file in project root:
-
-```env
-# Database Configuration
-DB_HOST=localhost
-DB_PORT=5432
-DB_USER=postgres
-DB_PASSWORD=your_secure_password
-DB_NAME=idaas_db
-
-# JWT Configuration (RSA-256)
-JWT_SECRET_KEY_PATH=./private_key.pem
-JWT_PUBLIC_KEY_PATH=./public_key.pem
-
-# Token TTL
-JWT_ACCESS_TTL=15m
-JWT_REFRESH_TTL=168h
-
-# Grace Period for Refresh Token Rotation
-REFRESH_GRACE_PERIOD=10s
-
-# Email Configuration
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=your-email@gmail.com
-SMTP_PASSWORD=your-app-password
-SMTP_FROM=noreply@mein-idaas.com
-
-# Server Configuration
-PORT=4000
-COOKIE_PATH=/api/v1/auth
-
-# Argon2 Password Hashing
-ARGON2_TIME=3
-ARGON2_MEMORY=65536
-ARGON2_THREADS=4
-ARGON2_KEY_LENGTH=32
-ARGON2_SALT_LENGTH=16
-```
-
-4. Generate RSA keys (if not present):
-```bash
-openssl genrsa -out private_key.pem 2048
-openssl rsa -in private_key.pem -pubout -out public_key.pem
-```
-
-5. Create PostgreSQL database:
-```bash
-psql -U postgres
-CREATE DATABASE idaas_db;
-\q
-```
-
-6. Run the application:
-```bash
-go run main.go
-```
-
-Server will start on `http://localhost:4000`
-
----
-
-#### Option 2: Docker Setup
-
-1. Clone the repository:
-```bash
-git clone https://github.com/yourusername/mein-idaas.git
-cd mein-idaas
-```
-
-2. Create `.env` file (as above)
-
-3. Start with Docker Compose:
-```bash
-docker-compose up -d
-```
-
-This will:
-- Start PostgreSQL container
-- Build and start Go API container
-- Auto-migrate database schema
-- Seed default roles
-
-4. Access the API:
-```
-http://localhost:4000
-```
-
----
-
-### Verify Installation
-
-Check server health:
-```bash
-curl http://localhost:4000/health
-```
-
-Expected response:
+### Refresh Token (RS256)
 ```json
-{"status":"ok"}
-```
-
----
-
-## API Documentation
-
-### Swagger UI
-
-Access interactive API documentation:
-```
-http://localhost:4000/swagger/index.html
-```
-
-Full OpenAPI spec:
-```
-http://localhost:4000/swagger/doc.json
-```
-
----
-
-## Database Schema
-
-### Users Table
-```sql
-CREATE TABLE users (
-  id UUID PRIMARY KEY,
-  name VARCHAR(50) NOT NULL,
-  email VARCHAR(255) NOT NULL UNIQUE,
-  is_email_verified BOOLEAN DEFAULT false,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-Fields:
-- `id` - Unique identifier (UUID v4)
-- `name` - User's display name
-- `email` - Unique email address
-- `is_email_verified` - Email verification status (false until OTP confirmed)
-- `created_at` - Account creation timestamp
-- `updated_at` - Last update timestamp
-
----
-
-### Credentials Table
-```sql
-CREATE TABLE credentials (
-  id UUID PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  type VARCHAR(50) NOT NULL,
-  value TEXT NOT NULL,
-  active BOOLEAN DEFAULT true,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(user_id, type)
-);
-```
-
-Fields:
-- `id` - Unique identifier
-- `user_id` - Reference to user
-- `type` - Credential type (currently 'password')
-- `value` - Hashed credential value (Argon2id for passwords)
-- `active` - Whether credential is active
-- Unique constraint ensures one credential per type per user
-
----
-
-### Refresh Tokens Table
-```sql
-CREATE TABLE refresh_tokens (
-  id UUID PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  token_hash VARCHAR(255) NOT NULL UNIQUE,
-  expires_at TIMESTAMP NOT NULL,
-  replaced_at TIMESTAMP,
-  replaced_by_token_id UUID REFERENCES refresh_tokens(id),
-  revoked_at TIMESTAMP,
-  client_ip VARCHAR(45),
-  user_agent TEXT,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-Fields:
-- `id` - Token ID (UUID)
-- `user_id` - Token owner
-- `token_hash` - Bcrypt hash of the actual token (stored securely)
-- `expires_at` - Token expiration (7 days from creation)
-- `replaced_at` - When this token was rotated (marks grace period start)
-- `replaced_by_token_id` - UUID of replacement token (for grace period retry)
-- `revoked_at` - Manual revocation timestamp (null = active)
-- `client_ip` - Client IP for audit trail
-- `user_agent` - Browser/client identifier
-
-**Grace Period Logic:**
-- First use: `replaced_at` = null → Normal rotation
-- Concurrent retry (< 10s): Use old `replaced_by_token_id` → Safe
-- Replay attack (> 10s): Reject → Security locked
-
----
-
-### Roles Table
-```sql
-CREATE TABLE roles (
-  id UUID PRIMARY KEY,
-  code VARCHAR(50) UNIQUE NOT NULL,
-  description TEXT,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-Default roles seeded:
-- `admin` - Full system access
-- `user` - Standard user role (default for new registrations)
-
----
-
-### User Roles Junction Table
-```sql
-CREATE TABLE user_roles (
-  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-  role_id UUID REFERENCES roles(id) ON DELETE CASCADE,
-  PRIMARY KEY (user_id, role_id)
-);
-```
-
-Many-to-many relationship between users and roles.
-
----
-
-### Verification Codes (In-Memory)
-```
-Structure: Map[userID]VerificationCode
 {
-  code: "123456" (6 digits)
-  created_at: timestamp
-  expires_at: timestamp (5 minutes from creation)
+  "sub": "550e8400-e29b-41d4-a716-446655440000",
+  "jti": "refresh-token-uuid",
+  "iss": "mein-idaas",
+  "iat": 1703247200,
+  "exp": 1703852000
 }
 ```
 
-Note: Uses in-memory storage with automatic cleanup. For production, consider Redis or database persistence.
-
----
+The refresh token's `jti` (JWT ID) corresponds to the `RefreshToken.ID` stored in the database, enabling rotation tracking.
 
 ## Security Features
 
-### Password Security
-- **Argon2id hashing** - Memory-hard password hashing algorithm resistant to GPU/ASIC attacks
-- **Dynamic parameter support** - Argon2 parameters configurable via environment variables without locking users out
-- **Parameter extraction** - Each password hash stores its own parameters (time, memory, threads)
-- **Safe parameter changes** - Global parameters can be updated; old passwords validated using their stored parameters
-- **Passwords never stored in plain text** - Only secure hashes stored in database
-- **Constant-time comparison** - Prevents timing attacks during password verification
+### Password Hashing
+- **Argon2id** with configurable parameters (time, memory, threads, key length, salt length)
+- Each hash stores its own parameters (backward compatible — changing global params doesn't break existing passwords)
+- Constant-time comparison to prevent timing attacks
 
-### Argon2 Implementation Details
+### Token Security
+- **RS256 asymmetric signing** — private key signs, public key verifies
+- **Refresh token rotation** — every refresh issues a new pair and marks the old token replaced
+- **Reuse detection** — if a used token is presented after the grace period (10s), it's flagged as theft
+- **Token family tracking** — `replaced_by_token_id` creates a linked list of rotated tokens
+- **Daily cleanup** — expired tokens are purged from DB at noon daily
 
-Your system uses **Argon2id** with the following hash format:
-
-```
-$argon2id$v=19$m=<memory>,t=<time>,p=<threads>$<salt_hex>$<hash_hex>
-```
-
-**Example hash:**
-```
-$argon2id$v=19$m=65536,t=3,p=4$abcd1234efgh5678$xyz123abc456def789xyz123abc456def789xyz1234567
-```
-
-**How it works:**
-
-1. **Hash Creation** - New passwords hashed with current global parameters from `.env`:
-   - Parameters embedded in the hash string
-   - Salt randomly generated and stored in hash
-   - Hash is computed using embedded parameters
-
-2. **Password Validation** - When user logs in:
-   - Extract salt from stored hash
-   - Extract parameters (m, t, p) from hash format
-   - Recompute hash using **EXTRACTED parameters** (not global variables)
-   - Compare computed hash with stored hash
-   - User logs in successfully
-
-3. **Safe Parameter Updates** - You can change Argon2 parameters in `.env`:
-   - Old passwords continue to validate (use their stored parameters)
-   - New passwords use updated parameters
-   - No users locked out during migration
-   - Gradual security improvement as users re-register
-
-**Why this is secure:**
-- Each password is self-contained with its own parameters
-- Global parameters only affect NEW passwords
-- Old password hashes are immutable and always validate correctly
-- Allows incremental security upgrades without service disruption
-
-### JWT Security
-- RSA-256 asymmetric signing (public/private key pair)
-- `sub` (subject) contains user ID
-- `roles` included for quick authorization checks
-- Separate access and refresh token lifecycles
-- Short-lived access tokens (15 minutes)
-- Long-lived refresh tokens (7 days)
+### Rate Limiting
+- 10 requests/second per IP
+- IPs exceeding the limit are banned for 10 minutes
+- Custom in-memory storage with periodic cleanup goroutine
+- Banned IPs get `403 Forbidden`; over-limit gets `429 Too Many Requests`
 
 ### Email Verification
-- 6-digit OTP codes (randomly generated)
-- 5-minute expiration per code
-- Automatic code cleanup
-- Email sent asynchronously (non-blocking)
-
-### Token Rotation & Grace Period
-- Old refresh tokens marked as "replaced" on rotation
-- 10-second grace period for network retry safety
-- Theft detection after grace period expires
-- Account lockdown on suspicious reuse
-- Prevents token replay attacks
-
-### Database Security
-- Refresh tokens stored hashed (SHA-256), not plain text
-- Unique email constraint prevents duplicate accounts
-- Foreign key constraints with cascade deletion
-- Token audit trail (IP, User-Agent, timestamps)
-- Automatic cleanup of expired tokens (daily cron)
-
-### HTTP Security
-- Refresh tokens stored in HTTP-only cookies
-- Secure flag set (HTTPS only in production)
-- SameSite=Strict prevents CSRF attacks
-- Access token in response body for client-side use
-
----
-
-## Configuration
-
-### Environment Variables
-
-```env
-# Database
-DB_HOST              # PostgreSQL host (default: localhost)
-DB_PORT              # PostgreSQL port (default: 5432)
-DB_USER              # PostgreSQL user
-DB_PASSWORD          # PostgreSQL password
-DB_NAME              # Database name
-
-# JWT / RSA Keys
-JWT_SECRET_KEY_PATH  # Path to private_key.pem
-JWT_PUBLIC_KEY_PATH  # Path to public_key.pem
-
-# Token Lifetimes
-JWT_ACCESS_TTL       # Access token TTL (default: 15m)
-JWT_REFRESH_TTL      # Refresh token TTL (default: 168h = 7 days)
-
-# Grace Period
-REFRESH_GRACE_PERIOD # Grace window for token rotation (default: 10s)
-
-# Argon2 Password Hashing
-ARGON2_TIME          # Iterations (default: 3) - Higher = more secure but slower
-ARGON2_MEMORY        # Memory in KB (default: 65536 = 64MB) - Higher = more resistant to attacks
-ARGON2_THREADS       # Parallel threads (default: 4) - Should match CPU cores
-ARGON2_KEY_LENGTH    # Hash output length in bytes (default: 32) - Higher = more secure
-ARGON2_SALT_LENGTH   # Salt length in bytes (default: 16) - Higher = more unique
-
-# Email / SMTP
-SMTP_HOST            # SMTP server host
-SMTP_PORT            # SMTP server port
-SMTP_USER            # SMTP username
-SMTP_PASSWORD        # SMTP password (app password for Gmail)
-SMTP_SENDER_NAME     # Sender name in emails
-
-# Server
-PORT                 # Server port (default: 4000)
-COOKIE_PATH          # Cookie path (default: /api/v1/auth)
-```
-
-### Argon2 Parameter Tuning
-
-Choose parameters based on your security requirements and hardware:
-
-**Development/Testing (Fast):**
-```env
-ARGON2_TIME=1
-ARGON2_MEMORY=16384
-ARGON2_THREADS=2
-```
-- Password hashing: ~50ms
-- Login: ~100-150ms
-
-**Standard Security (Recommended):**
-```env
-ARGON2_TIME=3
-ARGON2_MEMORY=65536
-ARGON2_THREADS=4
-```
-- Password hashing: ~200-300ms
-- Login: ~400-500ms
-
-**High Security (Production):**
-```env
-ARGON2_TIME=4
-ARGON2_MEMORY=262144
-ARGON2_THREADS=8
-```
-- Password hashing: ~1-2 seconds
-- Login: ~2-3 seconds
-
-Important: Higher parameters = slower login (users notice this). Choose based on your threat model.
-
----
-
-## Troubleshooting
-
-### "email not verified"
-- **Cause:** User tried to login without verifying email first
-- **Solution:** User needs to submit 6-digit OTP via `/auth/verify` endpoint
-- **How to resend:** POST `/auth/resend` with email address
-
-### "refresh token reuse detected: account locked for security"
-- **Cause:** Token was reused after 10-second grace period ended
-- **Solution:** This is a security feature. User must login again with credentials
-- **What happened:** Possible token theft detected
-
-### "invalid or expired verification code"
-- **Cause:** OTP code is wrong or older than 5 minutes
-- **Solution:** Request new code via `/auth/resend` endpoint
-
-### "email already in use"
-- **Cause:** Another account with same email exists
-- **Solution:** Use different email or request password reset (future feature)
-
-### "invalid credentials"
-- **Cause:** Email doesn't exist or password is wrong
-- **Solution:** Check email spelling or use `/auth/register` to create account
-
-### Database connection errors
-- **Cause:** PostgreSQL not running or connection string wrong
-- **Solution:** Verify database is running and `.env` file has correct credentials
-- **Check:** `psql -h localhost -U postgres -d idaas_db`
-
-### Swagger not loading
-- **Cause:** Swagger docs not generated
-- **Solution:** Run `swag init` in project root
-- **Or:** Restart server - docs auto-generate on startup
-
-### RSA keys not found
-- **Cause:** `private_key.pem` and `public_key.pem` missing
-- **Solution:** Generate with:
-```bash
-openssl genrsa -out private_key.pem 2048
-openssl rsa -in private_key.pem -pubout -out public_key.pem
-```
-
----
+- 6-digit random OTP codes
+- 5-minute TTL, stored in-memory
+- Code deleted after successful verification (prevents replay)
+- Async email sending (non-blocking API response)
 
 ## Dependencies
 
 | Package | Purpose |
 |---------|---------|
-| `gofiber/fiber/v2` | Ultra-fast HTTP framework |
-| `golang-jwt/jwt/v5` | JWT signing & verification |
-| `gorm.io/gorm` | ORM for database operations |
-| `gorm.io/driver/postgres` | PostgreSQL driver for GORM |
-| `golang.org/x/crypto` | Bcrypt password hashing |
-| `google/uuid` | UUID v4 generation |
+| `gofiber/fiber/v2` | HTTP framework (fasthttp-based) |
 | `gofiber/swagger` | Swagger UI integration |
-| `swaggo/swag` | Swagger documentation generation |
-| `joho/godotenv` | .env file loading |
-| `gomail.v2` | Email sending (SMTP) |
+| `golang-jwt/jwt/v5` | JWT signing (RS256) and parsing |
+| `gorm.io/gorm` | ORM (auto-migration, query building) |
+| `gorm.io/driver/postgres` | PostgreSQL driver for GORM |
+| `golang.org/x/crypto` | Argon2id password hashing |
+| `google/uuid` | UUID v4 generation |
+| `pquerna/otp` | TOTP generation and QR code rendering |
+| `joho/godotenv` | `.env` file loading |
+| `gopkg.in/gomail.v2` | SMTP email sending |
+| `go-playground/validator/v10` | Struct validation |
+| `swaggo/swag` | OpenAPI spec generation from annotations |
 
----
+## Troubleshooting
 
-## Development
+### "email not verified" on login
+The user's email hasn't been verified. Tell them to check their inbox for the 6-digit code, or call `POST /auth/resend`.
 
-### Running Tests
+### "refresh token reuse detected: account locked for security"
+A refresh token was used after the grace period expired — possible token theft. The user must log in again with credentials.
 
-```bash
-go test ./...
-```
+### "invalid or expired verification code"
+OTP is wrong or older than 5 minutes. Request a new one via `POST /auth/resend`.
 
-### Generating Swagger Docs
+### RSA key errors
+The application loads keys from environment variables as PEM strings, not file paths. Ensure `RSA_PRIVATE_KEY` and `RSA_PUBLIC_KEY` contain the full PEM content including `-----BEGIN/END-----` markers. Use `\n` for newlines. Both PKCS#1 and PKCS#8 formats are supported.
 
-```bash
-swag init
-```
-
-This generates/updates:
-- `docs/docs.go`
-- `docs/swagger.json`
-- `docs/swagger.yaml`
-
-### Code Structure Explained
-
-**Controllers** - `controller/` folder
-- HTTP request/response handling
-- Status code and error responses
-- Swagger annotations for documentation
-
-**Services** - `service/` folder
-- Business logic and workflows
-- Orchestrates repositories and utilities
-- Handles token generation, email sending, etc.
-
-**Repositories** - `repository/` folder
-- Interface-based for dependency injection
-- CRUD operations abstracted
-- Database query logic isolated
-
-**DTOs** - `dto/` folder
-- Data Transfer Objects
-- Request/response serialization
-- Decouples API contracts from models
-
-**Models** - `model/` folder
-- Database entities with GORM tags
-- Relationships: User → Roles, Credentials, RefreshTokens
-- Enums for credential types
-
-**Utilities** - `util/` folder
-- Reusable helper functions
-- JWT generation and validation
-- Password hashing and OTP generation
-- Database initialization
-- Environment variable loading
-
----
-
-## Future Enhancements
-
-- [ ] Multi-factor authentication (MFA) with TOTP
-- [ ] OAuth2/OIDC provider mode
-- [ ] Permission-based authorization (beyond roles)
-- [ ] Password reset flow
-- [ ] Account lockout after failed attempts
-- [ ] Audit logging and compliance tracking
-- [ ] Session management and device tracking
-- [ ] Redis caching for OTP and sessions
-- [ ] Rate limiting per user/IP
-- [ ] HTTPS/TLS enforcement
-- [ ] Token introspection endpoint
-- [ ] User profile management
-- [ ] Admin dashboard
-
----
+### Database connection errors
+Verify PostgreSQL is running and the `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` variables are correct.
 
 ## License
 
-MIT License - See LICENSE file for details
-
----
-
-## Contributing
-
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Submit a pull request
-
----
-
-## Support
-
-For issues, questions, or suggestions, please open an issue on GitHub.
-
----
-
-Built with simplicity and control in mind for developers who want to own their authentication infrastructure.
+MIT License — see `LICENSE` file.
